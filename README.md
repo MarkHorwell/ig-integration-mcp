@@ -1,0 +1,69 @@
+# IG Trading MCP
+
+A local Python MCP server for IG's REST Trading API. It provides account/history, market data, position, working-order, and trade-confirmation tools, plus guarded OTC trade actions. This project is not affiliated with, endorsed by, or sponsored by IG Group.
+
+Trading leveraged products can result in losses exceeding deposits. Start with an IG demo account.
+
+## Setup
+
+1. Create a demo or live IG API key in the IG trading platform.
+2. Copy `.env.example` to `.env` and set the values, or export the same variables in the MCP client's environment.
+3. Install and run with `uv`:
+
+```bash
+uv sync
+uv run ig-mcp
+```
+
+Required environment variables:
+
+| Variable | Description |
+| --- | --- |
+| `IG_API_KEY` | API key generated for the selected IG environment. |
+| `IG_IDENTIFIER` | IG login identifier. |
+| `IG_PASSWORD` | IG login password. |
+| `IG_ENVIRONMENT` | `demo` or `live`; defaults to `demo`. |
+| `IG_ACCOUNT_ID` | Optional active account ID. IG's login-selected account is used when omitted. |
+
+The server keeps OAuth tokens in memory only. It sends credentials to IG only during login and never returns tokens from tools.
+
+## MCP Client Configuration
+
+Example configuration for a local stdio-capable MCP client:
+
+```json
+{
+  "mcpServers": {
+    "ig": {
+      "command": "uv",
+      "args": ["--directory", "/absolute/path/to/ig-integration-mcp", "run", "ig-mcp"],
+      "env": {
+        "IG_API_KEY": "your-demo-key",
+        "IG_IDENTIFIER": "your-identifier",
+        "IG_PASSWORD": "your-password",
+        "IG_ENVIRONMENT": "demo"
+      }
+    }
+  }
+}
+```
+
+## Trade Safety
+
+All tools that create, update, close, or cancel a trade/order require `confirm: true`.
+
+When `IG_ENVIRONMENT=live`, they additionally require this exact parameter:
+
+```json
+{"live_confirmation": "LIVE_TRADE_CONFIRMED"}
+```
+
+Use `ig_get_market` to inspect a market's dealing rules before submitting an order. Trade tools validate the main IG field dependencies before making API calls, but IG remains the authority for account-specific eligibility, sizes, and price rules.
+
+## Testing
+
+```bash
+uv run pytest
+```
+
+Tests mock all IG API traffic and do not need credentials.

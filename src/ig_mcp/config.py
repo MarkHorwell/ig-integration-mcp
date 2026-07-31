@@ -1,0 +1,47 @@
+from __future__ import annotations
+
+import os
+from dataclasses import dataclass
+
+from dotenv import load_dotenv
+
+DEMO_BASE_URL = "https://demo-api.ig.com/gateway/deal"
+LIVE_BASE_URL = "https://api.ig.com/gateway/deal"
+
+
+@dataclass(frozen=True, slots=True)
+class Settings:
+    api_key: str
+    identifier: str
+    password: str
+    environment: str
+    account_id: str | None
+
+    @property
+    def base_url(self) -> str:
+        return DEMO_BASE_URL if self.environment == "demo" else LIVE_BASE_URL
+
+    @classmethod
+    def from_environment(cls) -> Settings:
+        load_dotenv()
+        values = {
+            "api_key": os.getenv("IG_API_KEY"),
+            "identifier": os.getenv("IG_IDENTIFIER"),
+            "password": os.getenv("IG_PASSWORD"),
+        }
+        missing = [f"IG_{name.upper()}" for name, value in values.items() if not value]
+        if missing:
+            variable_names = ", ".join(missing)
+            raise RuntimeError(f"Missing environment variables: {variable_names}")
+
+        environment = os.getenv("IG_ENVIRONMENT", "demo").lower()
+        if environment not in {"demo", "live"}:
+            raise RuntimeError("IG_ENVIRONMENT must be either 'demo' or 'live'")
+
+        return cls(
+            api_key=values["api_key"],
+            identifier=values["identifier"],
+            password=values["password"],
+            environment=environment,
+            account_id=os.getenv("IG_ACCOUNT_ID") or None,
+        )
