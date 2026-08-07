@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import os
 from dataclasses import dataclass
+from pathlib import Path
 
 from dotenv import load_dotenv
 
@@ -16,6 +17,8 @@ class Settings:
     password: str
     environment: str
     account_id: str | None
+    cache_enabled: bool = True
+    cache_path: Path = Path("~/.cache/ig-mcp/cache.sqlite3")
 
     @property
     def base_url(self) -> str:
@@ -38,10 +41,18 @@ class Settings:
         if environment not in {"demo", "live"}:
             raise RuntimeError("IG_ENVIRONMENT must be either 'demo' or 'live'")
 
+        cache_enabled = os.getenv("IG_CACHE_ENABLED", "true").lower()
+        if cache_enabled not in {"true", "false"}:
+            raise RuntimeError("IG_CACHE_ENABLED must be either 'true' or 'false'")
+
         return cls(
             api_key=values["api_key"],
             identifier=values["identifier"],
             password=values["password"],
             environment=environment,
             account_id=os.getenv("IG_ACCOUNT_ID") or None,
+            cache_enabled=cache_enabled == "true",
+            cache_path=Path(
+                os.getenv("IG_CACHE_PATH", "~/.cache/ig-mcp/cache.sqlite3")
+            ).expanduser(),
         )

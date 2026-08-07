@@ -1,3 +1,5 @@
+from pathlib import Path
+
 import httpx
 import pytest
 import respx
@@ -9,6 +11,24 @@ from ig_mcp.config import DEMO_BASE_URL, Settings
 @pytest.fixture
 def settings() -> Settings:
     return Settings("key", "user", "password", "demo", None)
+
+
+def cached_settings(cache_path: Path) -> Settings:
+    return Settings("key", "user", "password", "demo", None, True, cache_path)
+
+
+def login_response() -> httpx.Response:
+    return httpx.Response(
+        200,
+        json={
+            "accountId": "ABC",
+            "oauthToken": {
+                "access_token": "access",
+                "refresh_token": "refresh",
+                "expires_in": "60",
+            },
+        },
+    )
 
 
 @respx.mock
@@ -111,3 +131,74 @@ async def test_client_refreshes_after_an_unauthorized_request(
 
     assert result == {"accounts": []}
     assert accounts.calls[1].request.headers["Authorization"] == "Bearer new-access"
+
+
+@respx.mock
+async def test_cached_get_persists_across_clients(tmp_path: Path) -> None:
+    respx.post(f"{DEMO_BASE_URL}/session").mock(return_value=login_response())
+    categories = respx.get(f"{DEMO_BASE_URL}/categories").mock(
+        return_value=httpx.Response(200, json={"categories": []})
+    )
+    settings = cached_settings(tmp_path / "cache.sqlite3")
+
+    async with httpx.AsyncClient(base_url=DEMO_BASE_URL) as http:
+        client = IGClient(settings, http)
+        assert await client.request(
+            "GET",
+            "/categories",
+            version=1,
+            cache_ttl_seconds=60,
+            cache_group="catalogue",
+        ) == {"categories": []}
+
+    async with httpx.AsyncClient(base_url=DEMO_BASE_URL) as http:
+        client = IGClient(settings, http)
+        assert await client.request(
+            "GET",
+            "/categories",
+            version=1,
+            cache_ttl_seconds=60,
+            cache_group="catalogue",
+        ) == {"categories": []}
+
+    assert len(categories.calls) == 1
+
+
+@respx.mock
+async def test_historical_prices_fetch_only_uncovered_range(tmp_path: Path) -> None:
+    respx.post(f"{DEMO_BASE_URL}/session").mock(return_value=login_response())
+    prices = respx.get(f"{DEMO_BASE_URL}/prices/EPIC/MINUTE").mock(
+        side_effect=[
+            httpx.Response(
+                200,
+                json={
+                    "prices": [
+                        {"snapshotTimeUTC": "2026/08/01 00:30:00", "closePrice": {}}
+                    ]
+                },
+            ),
+            httpx.Response(
+                200,
+                json={
+                    "prices": [
+                        {"snapshotTimeUTC": "2026/08/01 01:30:00", "closePrice": {}}
+                    ]
+                },
+            ),
+        ]
+    )
+    settings = cached_settings(tmp_path / "cache.sqlite3")
+    async with httpx.AsyncClient(base_url=DEMO_BASE_URL) as http:
+        client = IGClient(settings, http)
+        first = await client.get_historical_prices(
+            "EPIC", "MINUTE", "2026-08-01T00:00:00Z", "2026-08-01T01:00:00Z"
+        )
+        second = await client.get_historical_prices(
+            "EPIC", "MINUTE", "2026-08-01T00:00:00Z", "2026-08-01T02:00:00Z"
+        )
+
+    assert len(first["prices"]) == 1
+    assert len(second["prices"]) == 2
+    assert len(prices.calls) == 2
+    assert prices.calls[1].request.url.params["from"] == "2026-08-01T01:00:00Z"
+    assert prices.calls[1].request.url.params["to"] == "2026-08-01T02:00:00Z"

@@ -1,3 +1,5 @@
+from pathlib import Path
+
 import pytest
 
 from ig_mcp.config import DEMO_BASE_URL, LIVE_BASE_URL, Settings
@@ -14,6 +16,8 @@ def test_settings_reads_demo_environment(monkeypatch: pytest.MonkeyPatch) -> Non
 
     assert settings.base_url == DEMO_BASE_URL
     assert settings.account_id is None
+    assert settings.cache_enabled is True
+    assert settings.cache_path == Path("~/.cache/ig-mcp/cache.sqlite3").expanduser()
 
 
 def test_settings_uses_live_base_url(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -27,6 +31,19 @@ def test_settings_uses_live_base_url(monkeypatch: pytest.MonkeyPatch) -> None:
 
     assert settings.base_url == LIVE_BASE_URL
     assert settings.account_id == "ABC123"
+
+
+def test_settings_allows_cache_to_be_disabled(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("IG_API_KEY", "key")
+    monkeypatch.setenv("IG_IDENTIFIER", "user")
+    monkeypatch.setenv("IG_PASSWORD", "password")
+    monkeypatch.setenv("IG_CACHE_ENABLED", "false")
+    monkeypatch.setenv("IG_CACHE_PATH", "/tmp/ig-cache.sqlite3")
+
+    settings = Settings.from_environment()
+
+    assert settings.cache_enabled is False
+    assert settings.cache_path == Path("/tmp/ig-cache.sqlite3")
 
 
 def test_settings_rejects_invalid_environment(monkeypatch: pytest.MonkeyPatch) -> None:

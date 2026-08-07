@@ -27,6 +27,25 @@ Required environment variables:
 
 The server keeps OAuth tokens in memory only. It sends credentials to IG only during login and never returns tokens from tools.
 
+## API Call Cache
+
+Persistent caching is enabled by default to reduce IG API usage. Cached data is stored in `~/.cache/ig-mcp/cache.sqlite3`; set `IG_CACHE_PATH` to use another location or `IG_CACHE_ENABLED=false` to disable cache reads and writes.
+
+The server caches categories for 6 hours, category instruments for 1 hour, market searches for 10 minutes, and activity/transaction history for 5 minutes. A successful trade or working-order change invalidates cached activity and transactions for the active account.
+
+Trading-sensitive data is never cached: account details, market snapshots, positions, working orders, confirmations, and all write operations. OAuth tokens, API keys, passwords, and HTTP headers are never written to the cache.
+
+Historical price requests use a persistent candle cache. Request an explicit UTC range and the server calls IG only for periods that are not already covered. The current, potentially incomplete candle is refreshed after one minute.
+
+```text
+ig_get_historical_prices(
+  epic="CS.D.EURUSD.CFD.IP",
+  resolution="MINUTE",
+  from_date="2026-08-01T00:00:00Z",
+  to_date="2026-08-01T12:00:00Z",
+)
+```
+
 ## MCP Client Configuration
 
 Example configuration for a local stdio-capable MCP client:

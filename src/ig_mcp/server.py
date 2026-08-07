@@ -80,6 +80,8 @@ async def ig_get_activity(
             "detailed": detailed,
             "pageSize": page_size,
         },
+        cache_ttl_seconds=300,
+        cache_group="history",
     )
 
 
@@ -90,7 +92,12 @@ async def ig_get_transactions(
     """Return transactions for a type and date range."""
     path = f"/history/transactions/{transaction_type}/{from_date}/{to_date}"
     return await get_client().request(
-        "GET", path, version=1, params={"pageSize": page_size}
+        "GET",
+        path,
+        version=1,
+        params={"pageSize": page_size},
+        cache_ttl_seconds=300,
+        cache_group="history",
     )
 
 
@@ -98,7 +105,12 @@ async def ig_get_transactions(
 async def ig_search_markets(search_term: str) -> dict[str, Any]:
     """Search IG instruments by a market name or symbol."""
     return await get_client().request(
-        "GET", "/markets", version=1, params={"searchTerm": search_term}
+        "GET",
+        "/markets",
+        version=1,
+        params={"searchTerm": search_term},
+        cache_ttl_seconds=600,
+        cache_group="market-search",
     )
 
 
@@ -110,27 +122,35 @@ async def ig_get_market(epic: str) -> dict[str, Any]:
 
 @mcp.tool()
 async def ig_get_historical_prices(
-    epic: str, resolution: str, num_points: int
+    epic: str, resolution: str, from_date: str, to_date: str
 ) -> dict[str, Any]:
-    """Get historical OHLC prices for an instrument and IG resolution."""
-    if num_points < 1:
-        raise ValueError("num_points must be at least 1")
-    return await get_client().request(
-        "GET", f"/prices/{epic}/{resolution}/{num_points}", version=2
+    """Get historical OHLC prices for a UTC range, reusing cached periods."""
+    return await get_client().get_historical_prices(
+        epic, resolution, from_date, to_date
     )
 
 
 @mcp.tool()
 async def ig_list_categories() -> dict[str, Any]:
     """List instrument categories enabled for the active account."""
-    return await get_client().request("GET", "/categories", version=1)
+    return await get_client().request(
+        "GET",
+        "/categories",
+        version=1,
+        cache_ttl_seconds=21600,
+        cache_group="catalogue",
+    )
 
 
 @mcp.tool()
 async def ig_list_category_instruments(category_id: str) -> dict[str, Any]:
     """List the instruments within an IG category."""
     return await get_client().request(
-        "GET", f"/categories/{category_id}/instruments", version=1
+        "GET",
+        f"/categories/{category_id}/instruments",
+        version=1,
+        cache_ttl_seconds=3600,
+        cache_group="catalogue",
     )
 
 
