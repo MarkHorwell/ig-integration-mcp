@@ -189,20 +189,20 @@ class IGClient:
                     raise RuntimeError("Unexpected prices response from IG API")
                 if not prices:
                     logger.warning(
-                        "IG returned no historical prices "
+                        "Rejecting empty historical prices response "
                         "epic=%s resolution=%s range=%s..%s",
                         epic,
                         resolution,
                         self._format_utc(missing_start),
                         self._format_utc(missing_end),
                     )
-                else:
-                    logger.info(
-                        "IG returned %d historical prices epic=%s resolution=%s",
-                        len(prices),
-                        epic,
-                        resolution,
-                    )
+                    continue
+                logger.info(
+                    "IG returned %d historical prices epic=%s resolution=%s",
+                    len(prices),
+                    epic,
+                    resolution,
+                )
                 await self._store_price_coverage(
                     scope,
                     epic,

@@ -45,9 +45,9 @@ The server caches categories for 6 hours, category instruments for 1 hour, marke
 
 Trading-sensitive data is never cached: account details, market snapshots, positions, working orders, confirmations, and all write operations. OAuth tokens, API keys, passwords, and HTTP headers are never written to the cache.
 
-Historical price requests use a persistent candle cache. Request an explicit UTC range and the server calls IG only for periods that are not already covered. The current, potentially incomplete candle is refreshed after one minute.
+Historical price requests use a persistent candle cache. Request an explicit UTC range and the server calls IG only for periods that are not already covered. The current, potentially incomplete candle is refreshed after one minute. An empty REST `prices` response is rejected: it creates no cache coverage and the interval is retried by the next request or collector refresh.
 
-Each stored candle records its source. REST candles are authoritative and replace a candle previously written by the streaming collector; a later stream update cannot overwrite a REST candle.
+Each stored candle records its source. Stream candles are provisional and remain stored until matching REST data reconciles them. REST candles are authoritative and replace a candle previously written by the streaming collector; a later stream update cannot overwrite a REST candle.
 
 ```text
 ig_get_historical_prices(

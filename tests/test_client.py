@@ -225,3 +225,24 @@ async def test_historical_prices_fetch_only_uncovered_range(tmp_path: Path) -> N
     assert prices.calls[1].request.url.params["resolution"] == "MINUTE"
     assert prices.calls[1].request.url.params["from"] == "2026-08-01T01:00:00"
     assert prices.calls[1].request.url.params["to"] == "2026-08-01T02:00:00"
+
+
+@respx.mock
+async def test_empty_historical_prices_response_is_not_cached(tmp_path: Path) -> None:
+    respx.post(f"{DEMO_BASE_URL}/session").mock(return_value=login_response())
+    prices = respx.get(f"{DEMO_BASE_URL}/prices/EPIC").mock(
+        return_value=httpx.Response(200, json={"prices": []})
+    )
+    settings = cached_settings(tmp_path / "cache.sqlite3")
+    async with httpx.AsyncClient(base_url=DEMO_BASE_URL) as http:
+        client = IGClient(settings, http)
+        first = await client.get_historical_prices(
+            "EPIC", "MINUTE", "2026-08-01T00:00:00Z", "2026-08-01T01:00:00Z"
+        )
+        second = await client.get_historical_prices(
+            "EPIC", "MINUTE", "2026-08-01T00:00:00Z", "2026-08-01T01:00:00Z"
+        )
+
+    assert first == {"prices": []}
+    assert second == {"prices": []}
+    assert len(prices.calls) == 2
