@@ -65,7 +65,10 @@ async def test_client_logs_in_then_makes_authenticated_request(
     assert result == {"accounts": [], "allowance": {"remainingAllowance": 42}}
     assert accounts.calls[0].request.headers["Authorization"] == "Bearer access"
     assert accounts.calls[0].request.headers["IG-ACCOUNT-ID"] == "ABC"
-    assert "IG API allowance: {'remainingAllowance': 42}" in caplog.messages
+    assert (
+        "IG API response: method=GET version=1 status=200 "
+        "allowance={'remainingAllowance': 42}"
+    ) in caplog.messages
 
 
 @respx.mock
@@ -96,6 +99,32 @@ async def test_client_raises_structured_ig_error(settings: Settings) -> None:
             await client.request("GET", "/accounts", version=1)
 
     assert error.value.request_id == "request-1"
+    assert error.value.request == {
+        "method": "GET",
+        "url": f"{DEMO_BASE_URL}/accounts",
+        "body": None,
+    }
+
+
+@respx.mock
+async def test_client_redacts_credentials_from_failed_login_request(
+    settings: Settings,
+) -> None:
+    respx.post(f"{DEMO_BASE_URL}/session").mock(
+        return_value=httpx.Response(
+            403, json={"errorCode": "error.security.invalid-details"}
+        )
+    )
+    async with httpx.AsyncClient(base_url=DEMO_BASE_URL) as http:
+        client = IGClient(settings, http)
+        with pytest.raises(IGApiError) as error:
+            await client.request("GET", "/accounts", version=1)
+
+    assert error.value.request == {
+        "method": "POST",
+        "url": f"{DEMO_BASE_URL}/session",
+        "body": {"identifier": "user", "password": "[REDACTED]"},
+    }
 
 
 @respx.mock
@@ -173,7 +202,15 @@ async def test_cached_get_persists_across_clients(tmp_path: Path) -> None:
 
 
 @respx.mock
-async def test_historical_prices_fetch_only_uncovered_range(tmp_path: Path) -> None:
+async def test_historical_prices_fetch_only_uncovered_range(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    monkeypatch.setattr(
+        IGClient,
+        "_current_candle_start",
+        staticmethod(lambda resolution: datetime(2026, 8, 1, 3, tzinfo=UTC)),
+    )
+    caplog.set_level(logging.DEBUG, logger="ig_mcp.client")
     respx.post(f"{DEMO_BASE_URL}/session").mock(return_value=login_response())
     prices = respx.get(f"{DEMO_BASE_URL}/prices/EPIC").mock(
         side_effect=[
@@ -211,6 +248,14 @@ async def test_historical_prices_fetch_only_uncovered_range(tmp_path: Path) -> N
     assert prices.calls[0].request.url.params["resolution"] == "MINUTE"
     assert prices.calls[1].request.url.params["from"] == "2026-08-01T01:00:00Z"
     assert prices.calls[1].request.url.params["to"] == "2026-08-01T02:00:00Z"
+    source_logs = [
+        message
+        for message in caplog.messages
+        if message.startswith("IG historical price sources:")
+    ]
+    assert "cache_candles=0 cache_bytes=0 api_candles=1 api_bytes=" in source_logs[0]
+    assert "cache_candles=1 cache_bytes=" in source_logs[1]
+    assert "api_candles=1 api_bytes=" in source_logs[1]
 
 
 @respx.mock

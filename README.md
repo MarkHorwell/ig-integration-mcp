@@ -4,11 +4,11 @@ A local Python MCP server for IG's REST Trading API. It provides account/history
 
 Trading leveraged products can result in losses exceeding deposits. Start with an IG demo account.
 
-## Version 0.4.0
+## Version 0.5.0
 
-- Adds configurable daily-rotated file logging with one prior daily archive retained.
-- Logs historical-price response counts, request parameters, and IG API allowance objects when supplied.
-- Caches only finalized historical candles and requests missing ranges plus the active candle directly from IG.
+- Includes safe request method, URL, and body details in non-2xx IG API errors; credentials are redacted.
+- Logs each successful API response with its allowance object.
+- Logs historical-price cache and IG API candle counts and byte totals at `DEBUG` level.
 
 ## Setup
 
@@ -54,7 +54,7 @@ ig_get_historical_prices(
 
 ## File Logging
 
-Operational logging is enabled by default and writes only to `~/.cache/ig-mcp/ig-mcp.log`, keeping MCP stdout reserved for the protocol. Set `IG_LOG_PATH` to use another location, `IG_LOG_LEVEL` to select `DEBUG`, `INFO`, `WARNING`, `ERROR`, or `CRITICAL`, or `IG_LOG_ENABLED=false` to disable it.
+Operational logging is enabled by default and writes only to `~/.cache/ig-mcp/ig-mcp.log`, keeping MCP stdout reserved for the protocol. Set `IG_LOG_PATH` to use another location, `IG_LOG_LEVEL` to select `DEBUG`, `INFO`, `WARNING`, `ERROR`, or `CRITICAL`, or `IG_LOG_ENABLED=false` to disable it. Each successful API response log includes its `allowance` object. At `DEBUG`, historical-price logs include returned candle counts and serialized byte totals from the SQLite cache and IG API separately.
 
 Logs rotate at midnight UTC. The active log and one prior daily archive are retained; older archives are removed automatically.
 
