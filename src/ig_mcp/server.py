@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 import secrets
 from typing import Any
 
@@ -8,6 +9,7 @@ from pydantic import ValidationError
 
 from .client import IGClient
 from .config import Settings
+from .logging_config import configure_logging
 from .models import (
     ClosePosition,
     CreatePosition,
@@ -16,6 +18,7 @@ from .models import (
     UpdateWorkingOrder,
 )
 
+logger = logging.getLogger("ig_mcp.server")
 mcp = FastMCP("IG Trading")
 _client: IGClient | None = None
 
@@ -270,4 +273,8 @@ async def ig_cancel_working_order(
 
 def main() -> None:
     """Run the MCP server over standard input/output."""
+    settings = Settings.from_environment()
+    if settings.log_enabled:
+        configure_logging(settings.log_path, settings.log_level)
+    logger.info("Starting MCP server environment=%s", settings.environment)
     mcp.run(transport="stdio")

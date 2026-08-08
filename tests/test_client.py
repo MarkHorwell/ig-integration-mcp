@@ -134,6 +134,27 @@ async def test_client_refreshes_after_an_unauthorized_request(
 
 
 @respx.mock
+async def test_client_gets_lightstreamer_credentials(settings: Settings) -> None:
+    respx.post(f"{DEMO_BASE_URL}/session").mock(return_value=login_response())
+    session = respx.get(f"{DEMO_BASE_URL}/session").mock(
+        return_value=httpx.Response(
+            200,
+            headers={"CST": "client-token", "X-SECURITY-TOKEN": "account-token"},
+            json={"lightstreamerEndpoint": "https://stream.example.test"},
+        )
+    )
+    async with httpx.AsyncClient(base_url=DEMO_BASE_URL) as http:
+        client = IGClient(settings, http)
+        credentials = await client.streaming_credentials()
+
+    assert credentials.endpoint == "https://stream.example.test"
+    assert credentials.account_id == "ABC"
+    assert credentials.cst == "client-token"
+    assert credentials.security_token == "account-token"
+    assert session.calls[0].request.url.params["fetchSessionTokens"] == "true"
+
+
+@respx.mock
 async def test_cached_get_persists_across_clients(tmp_path: Path) -> None:
     respx.post(f"{DEMO_BASE_URL}/session").mock(return_value=login_response())
     categories = respx.get(f"{DEMO_BASE_URL}/categories").mock(
@@ -167,7 +188,7 @@ async def test_cached_get_persists_across_clients(tmp_path: Path) -> None:
 @respx.mock
 async def test_historical_prices_fetch_only_uncovered_range(tmp_path: Path) -> None:
     respx.post(f"{DEMO_BASE_URL}/session").mock(return_value=login_response())
-    prices = respx.get(f"{DEMO_BASE_URL}/prices/EPIC/MINUTE").mock(
+    prices = respx.get(f"{DEMO_BASE_URL}/prices/EPIC").mock(
         side_effect=[
             httpx.Response(
                 200,
@@ -200,5 +221,7 @@ async def test_historical_prices_fetch_only_uncovered_range(tmp_path: Path) -> N
     assert len(first["prices"]) == 1
     assert len(second["prices"]) == 2
     assert len(prices.calls) == 2
-    assert prices.calls[1].request.url.params["from"] == "2026-08-01T01:00:00Z"
-    assert prices.calls[1].request.url.params["to"] == "2026-08-01T02:00:00Z"
+    assert prices.calls[1].request.headers["Version"] == "3"
+    assert prices.calls[1].request.url.params["resolution"] == "MINUTE"
+    assert prices.calls[1].request.url.params["from"] == "2026-08-01T01:00:00"
+    assert prices.calls[1].request.url.params["to"] == "2026-08-01T02:00:00"

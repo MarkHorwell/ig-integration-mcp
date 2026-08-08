@@ -3,7 +3,9 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import json
+import logging
 import time
+from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
@@ -11,6 +13,16 @@ import httpx
 
 from .cache import PersistentCache
 from .config import Settings
+
+logger = logging.getLogger("ig_mcp.client")
+
+
+@dataclass(frozen=True, slots=True)
+class StreamingCredentials:
+    endpoint: str
+    account_id: str
+    cst: str
+    security_token: str
 
 
 class IGApiError(RuntimeError):
@@ -80,12 +92,20 @@ class IGClient:
             cache_key = self._response_cache_key(path, version, params)
             cached = await self._cache.get_response(cache_key)
             if cached is not None:
+                logger.info("Response cache hit path=%s version=%d", path, version)
                 return cached
+
+            logger.info("Response cache miss path=%s version=%d", path, version)
 
             lock = self._cache_locks.setdefault(cache_key, asyncio.Lock())
             async with lock:
                 cached = await self._cache.get_response(cache_key)
                 if cached is not None:
+                    logger.info(
+                        "Response cache hit after lock path=%s version=%d",
+                        path,
+                        version,
+                    )
                     return cached
                 result = await self._request_from_ig(
                     method, path, version, params, body
@@ -111,11 +131,23 @@ class IGClient:
 
         await self._ensure_session()
         if self._cache is None:
+            logger.info(
+                "Requesting historical prices without cache "
+                "epic=%s resolution=%s range=%s..%s",
+                epic,
+                resolution,
+                self._format_utc(start),
+                self._format_utc(end),
+            )
             return await self._request_from_ig(
                 "GET",
-                f"/prices/{epic}/{resolution}",
+                f"/prices/{epic}",
                 3,
-                {"from": self._format_utc(start), "to": self._format_utc(end)},
+                {
+                    "resolution": resolution,
+                    "from": self._format_ig_price_date(start),
+                    "to": self._format_ig_price_date(end),
+                },
                 None,
             )
 
@@ -125,14 +157,28 @@ class IGClient:
         async with lock:
             coverage = await self._cache.price_coverage(scope, epic, resolution)
             missing = self._missing_intervals(start, end, coverage)
+            logger.info(
+                "Historical price coverage epic=%s resolution=%s missing_intervals=%d",
+                epic,
+                resolution,
+                len(missing),
+            )
             for missing_start, missing_end in missing:
+                logger.info(
+                    "Requesting historical prices epic=%s resolution=%s range=%s..%s",
+                    epic,
+                    resolution,
+                    self._format_utc(missing_start),
+                    self._format_utc(missing_end),
+                )
                 response = await self._request_from_ig(
                     "GET",
-                    f"/prices/{epic}/{resolution}",
+                    f"/prices/{epic}",
                     3,
                     {
-                        "from": self._format_utc(missing_start),
-                        "to": self._format_utc(missing_end),
+                        "resolution": resolution,
+                        "from": self._format_ig_price_date(missing_start),
+                        "to": self._format_ig_price_date(missing_end),
                     },
                     None,
                 )
@@ -141,6 +187,22 @@ class IGClient:
                     isinstance(price, dict) for price in prices
                 ):
                     raise RuntimeError("Unexpected prices response from IG API")
+                if not prices:
+                    logger.warning(
+                        "IG returned no historical prices "
+                        "epic=%s resolution=%s range=%s..%s",
+                        epic,
+                        resolution,
+                        self._format_utc(missing_start),
+                        self._format_utc(missing_end),
+                    )
+                else:
+                    logger.info(
+                        "IG returned %d historical prices epic=%s resolution=%s",
+                        len(prices),
+                        epic,
+                        resolution,
+                    )
                 await self._store_price_coverage(
                     scope,
                     epic,
@@ -159,6 +221,57 @@ class IGClient:
             )
             return {"prices": prices}
 
+    async def streaming_credentials(self) -> StreamingCredentials:
+        """Return the session material required by IG's Lightstreamer service."""
+        await self._ensure_session()
+        response = await self._send(
+            "GET",
+            "/session",
+            version=1,
+            params={"fetchSessionTokens": "true"},
+            body=None,
+        )
+        payload = self._decode(response)
+        endpoint = payload.get("lightstreamerEndpoint")
+        cst = response.headers.get("CST")
+        security_token = response.headers.get("X-SECURITY-TOKEN")
+        if not all(
+            isinstance(value, str) and value
+            for value in (endpoint, self._account_id, cst, security_token)
+        ):
+            raise RuntimeError(
+                "IG did not return complete Lightstreamer session tokens"
+            )
+        logger.info("Obtained IG Lightstreamer session credentials")
+        return StreamingCredentials(endpoint, self._account_id, cst, security_token)
+
+    async def store_stream_prices(
+        self, epic: str, resolution: str, prices: list[dict[str, Any]]
+    ) -> None:
+        """Persist streaming candles as provisional data."""
+        if self._cache is None or not prices:
+            return
+        timestamps = [self._snapshot_time(price) for price in prices]
+        valid_timestamps = [timestamp for timestamp in timestamps if timestamp]
+        if not valid_timestamps:
+            logger.warning(
+                "Discarding stream price without a valid timestamp "
+                "epic=%s resolution=%s",
+                epic,
+                resolution,
+            )
+            return
+        await self._cache.store_prices(
+            self._cache_scope(),
+            epic,
+            resolution,
+            min(valid_timestamps),
+            max(valid_timestamps),
+            time.time() + 120,
+            prices,
+            source="stream",
+        )
+
     async def _request_from_ig(
         self,
         method: str,
@@ -171,6 +284,7 @@ class IGClient:
             method, path, version=version, params=params, body=body
         )
         if response.status_code == 401 and self._refresh_token:
+            logger.warning("IG request received 401; refreshing session path=%s", path)
             await self._refresh_session()
             response = await self._send(
                 method, path, version=version, params=params, body=body
@@ -199,6 +313,7 @@ class IGClient:
                 self._format_utc(completed_end),
                 253402300799.0,
                 prices,
+                source="rest",
             )
         if end > current_candle_start:
             volatile_start = max(start, current_candle_start)
@@ -210,6 +325,7 @@ class IGClient:
                 self._format_utc(end),
                 time.time() + 60,
                 prices,
+                source="rest",
             )
 
     @staticmethod
@@ -273,6 +389,15 @@ class IGClient:
     def _format_utc(value: datetime) -> str:
         return value.astimezone(UTC).isoformat().replace("+00:00", "Z")
 
+    @staticmethod
+    def _format_ig_price_date(value: datetime) -> str:
+        return value.astimezone(UTC).strftime("%Y-%m-%dT%H:%M:%S")
+
+    @staticmethod
+    def _snapshot_time(price: dict[str, Any]) -> str | None:
+        value = price.get("snapshotTimeUTC")
+        return value if isinstance(value, str) else None
+
     @classmethod
     def _missing_intervals(
         cls,
@@ -307,6 +432,7 @@ class IGClient:
             await self._login()
 
     async def _login(self) -> None:
+        logger.info("Authenticating with IG environment=%s", self.settings.environment)
         response = await self._http.post(
             "/session",
             headers=self._base_headers(version=3),
@@ -322,14 +448,17 @@ class IGClient:
             raise RuntimeError(
                 "IG login did not provide an active account ID; set IG_ACCOUNT_ID"
             )
+        logger.info("IG authentication succeeded")
 
     async def _refresh_session(self) -> None:
+        logger.info("Refreshing IG session")
         response = await self._http.post(
             "/session/refresh-token",
             headers=self._base_headers(version=1),
             json={"refresh_token": self._refresh_token},
         )
         self._store_tokens(self._decode(response))
+        logger.info("IG session refresh succeeded")
 
     def _store_tokens(self, payload: dict[str, Any]) -> None:
         token = payload.get("oauthToken", payload)
@@ -353,9 +482,31 @@ class IGClient:
         headers = self._base_headers(version=version)
         headers["Authorization"] = f"Bearer {self._access_token}"
         headers["IG-ACCOUNT-ID"] = self._account_id or ""
-        return await self._http.request(
-            method, path, headers=headers, params=params, json=body
+        started_at = time.perf_counter()
+        try:
+            response = await self._http.request(
+                method, path, headers=headers, params=params, json=body
+            )
+        except httpx.HTTPError:
+            logger.exception(
+                "IG request failed method=%s path=%s version=%d", method, path, version
+            )
+            raise
+        duration_ms = (time.perf_counter() - started_at) * 1000
+        request_id = response.headers.get("X-REQUEST-ID")
+        level = logging.ERROR if response.is_error else logging.INFO
+        logger.log(
+            level,
+            "IG response method=%s path=%s version=%d status=%d "
+            "duration_ms=%.1f request_id=%s",
+            method,
+            path,
+            version,
+            response.status_code,
+            duration_ms,
+            request_id or "-",
         )
+        return response
 
     def _base_headers(self, *, version: int) -> dict[str, str]:
         return {
@@ -368,6 +519,11 @@ class IGClient:
     @staticmethod
     def _decode(response: httpx.Response) -> dict[str, Any]:
         if response.is_error:
+            logger.error(
+                "IG API error status=%d request_id=%s",
+                response.status_code,
+                response.headers.get("X-REQUEST-ID", "-"),
+            )
             raise IGApiError(response)
         if not response.content:
             return {}

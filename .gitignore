@@ -16,3 +16,4 @@ htmlcov/
 .nox/
 .idea/
 .vscode/
+data/*.sqlite3

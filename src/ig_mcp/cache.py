@@ -2,11 +2,14 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import sqlite3
 import time
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
+
+logger = logging.getLogger("ig_mcp.cache")
 
 
 class PersistentCache:
@@ -42,6 +45,7 @@ class PersistentCache:
         end: str,
         expires_at: float,
         prices: list[dict[str, Any]],
+        source: str = "rest",
     ) -> None:
         await asyncio.to_thread(
             self._store_prices,
@@ -52,6 +56,7 @@ class PersistentCache:
             end,
             expires_at,
             prices,
+            source,
         )
 
     async def prices(
@@ -97,10 +102,26 @@ class PersistentCache:
                 resolution TEXT NOT NULL,
                 snapshot_time TEXT NOT NULL,
                 payload TEXT NOT NULL,
+                source TEXT NOT NULL DEFAULT 'rest',
+                observed_at TEXT NOT NULL,
                 PRIMARY KEY (scope, epic, resolution, snapshot_time)
             )
             """
         )
+        columns = {
+            row[1] for row in connection.execute("PRAGMA table_info(prices)").fetchall()
+        }
+        if "source" not in columns:
+            connection.execute(
+                "ALTER TABLE prices ADD COLUMN source TEXT NOT NULL DEFAULT 'rest'"
+            )
+        if "observed_at" not in columns:
+            connection.execute(
+                "ALTER TABLE prices ADD COLUMN observed_at TEXT NOT NULL DEFAULT ''"
+            )
+            connection.execute(
+                "UPDATE prices SET observed_at = snapshot_time WHERE observed_at = ''"
+            )
         return connection
 
     def _get_response(self, key: str) -> dict[str, Any] | None:
@@ -117,6 +138,7 @@ class PersistentCache:
                 payload = json.loads(row[0])
                 return payload if isinstance(payload, dict) else None
         except (OSError, sqlite3.Error, ValueError, TypeError):
+            logger.exception("Response cache read failed")
             return None
 
     def _set_response(
@@ -134,7 +156,7 @@ class PersistentCache:
                     ),
                 )
         except (OSError, sqlite3.Error, TypeError, ValueError):
-            pass
+            logger.exception("Response cache write failed")
 
     def _invalidate_group(self, scope: str, group_name: str) -> None:
         try:
@@ -144,7 +166,7 @@ class PersistentCache:
                     (group_name, f"{scope}:%"),
                 )
         except (OSError, sqlite3.Error):
-            pass
+            logger.exception("Response cache invalidation failed")
 
     def _price_coverage(
         self, scope: str, epic: str, resolution: str
@@ -161,6 +183,7 @@ class PersistentCache:
                 ).fetchall()
                 return [(row[0], row[1], row[2]) for row in rows]
         except (OSError, sqlite3.Error):
+            logger.exception("Price coverage read failed")
             return []
 
     def _store_prices(
@@ -172,29 +195,68 @@ class PersistentCache:
         end: str,
         expires_at: float,
         prices: list[dict[str, Any]],
+        source: str,
     ) -> None:
+        if source not in {"rest", "stream"}:
+            raise ValueError("Price source must be either 'rest' or 'stream'")
         try:
             with self._connect() as connection:
                 connection.execute(
                     "INSERT OR REPLACE INTO price_coverage VALUES (?, ?, ?, ?, ?, ?)",
                     (scope, epic, resolution, start, end, expires_at),
                 )
+                observed_at = datetime.now(UTC).isoformat().replace("+00:00", "Z")
                 for price in prices:
                     timestamp = self._snapshot_time(price)
                     if timestamp is None:
                         continue
                     connection.execute(
-                        "INSERT OR REPLACE INTO prices VALUES (?, ?, ?, ?, ?)",
+                        """
+                        INSERT INTO prices (
+                            scope, epic, resolution, snapshot_time, payload,
+                            source, observed_at
+                        ) VALUES (?, ?, ?, ?, ?, ?, ?)
+                        ON CONFLICT(scope, epic, resolution, snapshot_time)
+                        DO UPDATE SET
+                            payload = CASE
+                                WHEN excluded.source = 'rest'
+                                    OR prices.source = 'stream'
+                                THEN excluded.payload ELSE prices.payload END,
+                            source = CASE
+                                WHEN excluded.source = 'rest'
+                                    OR prices.source = 'stream'
+                                THEN excluded.source ELSE prices.source END,
+                            observed_at = CASE
+                                WHEN excluded.source = 'rest'
+                                    OR prices.source = 'stream'
+                                THEN excluded.observed_at ELSE prices.observed_at END
+                        """,
                         (
                             scope,
                             epic,
                             resolution,
                             timestamp,
                             json.dumps(price, separators=(",", ":")),
+                            source,
+                            observed_at,
                         ),
                     )
+            logger.info(
+                "Stored %d %s price candles for epic=%s resolution=%s range=%s..%s",
+                len(prices),
+                source,
+                epic,
+                resolution,
+                start,
+                end,
+            )
         except (OSError, sqlite3.Error, TypeError, ValueError):
-            pass
+            logger.exception(
+                "Price persistence failed for source=%s epic=%s resolution=%s",
+                source,
+                epic,
+                resolution,
+            )
 
     def _prices(
         self, scope: str, epic: str, resolution: str, start: str, end: str
@@ -212,6 +274,7 @@ class PersistentCache:
                 ).fetchall()
                 return [json.loads(row[0]) for row in rows]
         except (OSError, sqlite3.Error, TypeError, ValueError):
+            logger.exception("Stored price read failed")
             return []
 
     @staticmethod

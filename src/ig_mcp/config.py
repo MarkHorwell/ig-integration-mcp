@@ -19,6 +19,9 @@ class Settings:
     account_id: str | None
     cache_enabled: bool = True
     cache_path: Path = Path("~/.cache/ig-mcp/cache.sqlite3")
+    log_enabled: bool = True
+    log_path: Path = Path("~/.cache/ig-mcp/ig-mcp.log")
+    log_level: str = "INFO"
 
     @property
     def base_url(self) -> str:
@@ -45,6 +48,13 @@ class Settings:
         if cache_enabled not in {"true", "false"}:
             raise RuntimeError("IG_CACHE_ENABLED must be either 'true' or 'false'")
 
+        log_enabled = os.getenv("IG_LOG_ENABLED", "true").lower()
+        if log_enabled not in {"true", "false"}:
+            raise RuntimeError("IG_LOG_ENABLED must be either 'true' or 'false'")
+        log_level = os.getenv("IG_LOG_LEVEL", "INFO").upper()
+        if log_level not in {"DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"}:
+            raise RuntimeError("IG_LOG_LEVEL must be a standard logging level")
+
         return cls(
             api_key=values["api_key"],
             identifier=values["identifier"],
@@ -55,4 +65,9 @@ class Settings:
             cache_path=Path(
                 os.getenv("IG_CACHE_PATH", "~/.cache/ig-mcp/cache.sqlite3")
             ).expanduser(),
+            log_enabled=log_enabled == "true",
+            log_path=Path(
+                os.getenv("IG_LOG_PATH", "~/.cache/ig-mcp/ig-mcp.log")
+            ).expanduser(),
+            log_level=log_level,
         )

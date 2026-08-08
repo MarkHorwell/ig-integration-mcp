@@ -25,6 +25,16 @@ Required environment variables:
 | `IG_ENVIRONMENT` | `demo` or `live`; defaults to `demo`. |
 | `IG_ACCOUNT_ID` | Optional active account ID. IG's login-selected account is used when omitted. |
 
+Optional operational variables:
+
+| Variable | Description |
+| --- | --- |
+| `IG_CACHE_ENABLED` | Set to `false` to disable persistent cache reads and writes. Defaults to `true`. |
+| `IG_CACHE_PATH` | SQLite database path. Defaults to `~/.cache/ig-mcp/cache.sqlite3`. |
+| `IG_LOG_ENABLED` | Set to `false` to disable file logging. Defaults to `true`. |
+| `IG_LOG_PATH` | Log file path. Defaults to `~/.cache/ig-mcp/ig-mcp.log`. |
+| `IG_LOG_LEVEL` | `DEBUG`, `INFO`, `WARNING`, `ERROR`, or `CRITICAL`. Defaults to `INFO`. |
+
 The server keeps OAuth tokens in memory only. It sends credentials to IG only during login and never returns tokens from tools.
 
 ## API Call Cache
@@ -37,6 +47,8 @@ Trading-sensitive data is never cached: account details, market snapshots, posit
 
 Historical price requests use a persistent candle cache. Request an explicit UTC range and the server calls IG only for periods that are not already covered. The current, potentially incomplete candle is refreshed after one minute.
 
+Each stored candle records its source. REST candles are authoritative and replace a candle previously written by the streaming collector; a later stream update cannot overwrite a REST candle.
+
 ```text
 ig_get_historical_prices(
   epic="CS.D.EURUSD.CFD.IP",
@@ -44,6 +56,66 @@ ig_get_historical_prices(
   from_date="2026-08-01T00:00:00Z",
   to_date="2026-08-01T12:00:00Z",
 )
+```
+
+## Logging
+
+Operational logging is enabled by default and writes to `~/.cache/ig-mcp/ig-mcp.log`. The log rotates hourly in UTC and retains the active log plus 23 completed hourly files, limiting retention to approximately 24 hours. It records server startup, authentication and refresh events, cache decisions, IG response status/timing, historical-price ranges and counts, empty price responses, and exceptions. It never logs request/response bodies, tokens, credentials, API keys, or HTTP headers.
+
+Set `IG_LOG_PATH` to change the location, `IG_LOG_LEVEL` to one of `DEBUG`, `INFO`, `WARNING`, `ERROR`, or `CRITICAL`, or `IG_LOG_ENABLED=false` to disable it.
+
+## Market Data Collector
+
+Run the collector independently of the MCP stdio server to persist five-minute and hourly streaming chart updates, while reconciling daily, hourly, 15-minute, and five-minute REST candles every 15 minutes:
+
+```bash
+uv run ig-collect --epic CS.D.EURUSD.CFD.IP
+```
+
+The collector authenticates with IG's REST API, obtains Lightstreamer CST/XST session tokens, and subscribes to `CHART:{epic}:5MINUTE` and `CHART:{epic}:HOUR`. It persists `DAY`, `HOUR`, `MINUTE_15`, and `MINUTE_5` REST candles immediately at startup, then refreshes them every 900 seconds. Use `--rest-refresh-seconds` to change that interval; the minimum is 60 seconds.
+
+Override the default stream or REST resolutions when required:
+
+```bash
+uv run ig-collect --epic CS.D.EURUSD.CFD.IP \
+  --stream-resolutions 5MINUTE HOUR \
+  --rest-resolutions DAY HOUR MINUTE_15 MINUTE_5
+```
+
+The collector normally runs until stopped. For a short demo-only verification, use:
+
+```bash
+uv run ig-collect --epic CS.D.EURUSD.CFD.IP --run-seconds 45
+```
+
+### Sources And Precedence
+
+The `prices` table stores `source` and `observed_at` alongside each candle.
+
+| Source | Resolution | Role |
+| --- | --- | --- |
+| `stream` | `MINUTE_5`, `HOUR` | Live, provisional Lightstreamer chart updates. |
+| `rest` | `DAY`, `HOUR`, `MINUTE_15`, `MINUTE_5` | Historical and reconciliation data returned by IG REST. |
+
+REST replaces a stream candle only when both writes use the same epic, resolution, and timestamp. This applies to `HOUR` and `MINUTE_5`; daily and 15-minute rows are REST-only.
+
+No `stream` row is expected while IG does not publish updates, for example when the selected market is closed. Connection and subscription status is recorded in the configured log file.
+
+### Inspecting The Database
+
+Set a project-local cache path to keep a visible database while testing:
+
+```bash
+IG_CACHE_PATH=data/ig-market-data.sqlite3 \
+  uv run ig-collect --epic CS.D.EURUSD.CFD.IP --run-seconds 45
+```
+
+Inspect the resulting structure and stored sources with SQLite:
+
+```bash
+sqlite3 data/ig-market-data.sqlite3 ".schema prices"
+sqlite3 data/ig-market-data.sqlite3 \
+  "SELECT resolution, source, COUNT(*) FROM prices GROUP BY resolution, source;"
 ```
 
 ## MCP Client Configuration
