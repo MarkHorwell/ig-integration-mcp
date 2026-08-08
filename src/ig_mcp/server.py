@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import logging
 import secrets
+from logging.handlers import TimedRotatingFileHandler
 from typing import Any
 
 from mcp.server.fastmcp import FastMCP
@@ -18,6 +20,36 @@ from .models import (
 
 mcp = FastMCP("IG Trading")
 _client: IGClient | None = None
+
+
+def configure_logging(settings: Settings) -> None:
+    """Write application logs to a daily-rotated file, never MCP stdout."""
+    logger = logging.getLogger("ig_mcp")
+    logger.setLevel(getattr(logging, settings.log_level))
+    logger.propagate = False
+
+    for handler in list(logger.handlers):
+        if getattr(handler, "_ig_mcp_file_handler", False):
+            logger.removeHandler(handler)
+            handler.close()
+
+    if not settings.log_enabled:
+        return
+
+    settings.log_path.parent.mkdir(parents=True, exist_ok=True)
+    handler = TimedRotatingFileHandler(
+        settings.log_path,
+        when="midnight",
+        interval=1,
+        backupCount=1,
+        encoding="utf-8",
+        utc=True,
+    )
+    handler._ig_mcp_file_handler = True  # type: ignore[attr-defined]
+    handler.setFormatter(
+        logging.Formatter("%(asctime)s %(levelname)s %(name)s: %(message)s")
+    )
+    logger.addHandler(handler)
 
 
 def get_client() -> IGClient:
@@ -270,4 +302,5 @@ async def ig_cancel_working_order(
 
 def main() -> None:
     """Run the MCP server over standard input/output."""
+    configure_logging(Settings.from_environment())
     mcp.run(transport="stdio")

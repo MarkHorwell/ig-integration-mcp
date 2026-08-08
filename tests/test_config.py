@@ -11,6 +11,9 @@ def test_settings_reads_demo_environment(monkeypatch: pytest.MonkeyPatch) -> Non
     monkeypatch.setenv("IG_PASSWORD", "password")
     monkeypatch.setenv("IG_ENVIRONMENT", "demo")
     monkeypatch.setenv("IG_ACCOUNT_ID", "")
+    monkeypatch.setenv("IG_CACHE_PATH", "~/.cache/ig-mcp/cache.sqlite3")
+    monkeypatch.setenv("IG_LOG_PATH", "~/.cache/ig-mcp/ig-mcp.log")
+    monkeypatch.setenv("IG_LOG_LEVEL", "INFO")
 
     settings = Settings.from_environment()
 
@@ -18,6 +21,9 @@ def test_settings_reads_demo_environment(monkeypatch: pytest.MonkeyPatch) -> Non
     assert settings.account_id is None
     assert settings.cache_enabled is True
     assert settings.cache_path == Path("~/.cache/ig-mcp/cache.sqlite3").expanduser()
+    assert settings.log_enabled is True
+    assert settings.log_path == Path("~/.cache/ig-mcp/ig-mcp.log").expanduser()
+    assert settings.log_level == "INFO"
 
 
 def test_settings_uses_live_base_url(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -44,6 +50,31 @@ def test_settings_allows_cache_to_be_disabled(monkeypatch: pytest.MonkeyPatch) -
 
     assert settings.cache_enabled is False
     assert settings.cache_path == Path("/tmp/ig-cache.sqlite3")
+
+
+def test_settings_reads_logging_environment(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("IG_API_KEY", "key")
+    monkeypatch.setenv("IG_IDENTIFIER", "user")
+    monkeypatch.setenv("IG_PASSWORD", "password")
+    monkeypatch.setenv("IG_LOG_ENABLED", "false")
+    monkeypatch.setenv("IG_LOG_PATH", "/tmp/ig-mcp.log")
+    monkeypatch.setenv("IG_LOG_LEVEL", "debug")
+
+    settings = Settings.from_environment()
+
+    assert settings.log_enabled is False
+    assert settings.log_path == Path("/tmp/ig-mcp.log")
+    assert settings.log_level == "DEBUG"
+
+
+def test_settings_rejects_invalid_log_level(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("IG_API_KEY", "key")
+    monkeypatch.setenv("IG_IDENTIFIER", "user")
+    monkeypatch.setenv("IG_PASSWORD", "password")
+    monkeypatch.setenv("IG_LOG_LEVEL", "verbose")
+
+    with pytest.raises(RuntimeError, match="IG_LOG_LEVEL"):
+        Settings.from_environment()
 
 
 def test_settings_rejects_invalid_environment(monkeypatch: pytest.MonkeyPatch) -> None:

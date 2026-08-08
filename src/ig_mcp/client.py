@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import json
+import logging
 import time
 from datetime import UTC, datetime, timedelta
 from typing import Any
@@ -11,6 +12,8 @@ import httpx
 
 from .cache import PersistentCache
 from .config import Settings
+
+logger = logging.getLogger(__name__)
 
 
 class IGApiError(RuntimeError):
@@ -80,12 +83,14 @@ class IGClient:
             cache_key = self._response_cache_key(path, version, params)
             cached = await self._cache.get_response(cache_key)
             if cached is not None:
+                logger.debug("IG response cache hit: group=%s", cache_group)
                 return cached
 
             lock = self._cache_locks.setdefault(cache_key, asyncio.Lock())
             async with lock:
                 cached = await self._cache.get_response(cache_key)
                 if cached is not None:
+                    logger.debug("IG response cache hit: group=%s", cache_group)
                     return cached
                 result = await self._request_from_ig(
                     method, path, version, params, body
@@ -111,43 +116,37 @@ class IGClient:
 
         await self._ensure_session()
         if self._cache is None:
-            return await self._request_from_ig(
-                "GET",
-                f"/prices/{epic}/{resolution}",
-                3,
-                {"from": self._format_utc(start), "to": self._format_utc(end)},
-                None,
+            prices = await self._get_historical_prices_from_ig(
+                epic, resolution, start, end
             )
+            return {"prices": prices}
 
         scope = self._cache_scope()
         lock_key = f"prices:{scope}:{epic}:{resolution}"
         lock = self._cache_locks.setdefault(lock_key, asyncio.Lock())
         async with lock:
-            coverage = await self._cache.price_coverage(scope, epic, resolution)
-            missing = self._missing_intervals(start, end, coverage)
-            for missing_start, missing_end in missing:
-                response = await self._request_from_ig(
-                    "GET",
-                    f"/prices/{epic}/{resolution}",
-                    3,
-                    {
-                        "from": self._format_utc(missing_start),
-                        "to": self._format_utc(missing_end),
-                    },
-                    None,
-                )
-                prices = response.get("prices", [])
-                if not isinstance(prices, list) or not all(
-                    isinstance(price, dict) for price in prices
-                ):
-                    raise RuntimeError("Unexpected prices response from IG API")
-                await self._store_price_coverage(
-                    scope,
-                    epic,
-                    resolution,
-                    missing_start,
-                    missing_end,
-                    prices,
+            current_candle_start = self._current_candle_start(resolution)
+            completed_end = min(end, current_candle_start)
+            if start < completed_end:
+                coverage = await self._cache.price_coverage(scope, epic, resolution)
+                missing = self._missing_intervals(start, completed_end, coverage)
+                for missing_start, missing_end in missing:
+                    prices = await self._get_historical_prices_from_ig(
+                        epic, resolution, missing_start, missing_end
+                    )
+                    await self._store_price_coverage(
+                        scope,
+                        epic,
+                        resolution,
+                        missing_start,
+                        missing_end,
+                        prices,
+                    )
+
+            current_prices: list[dict[str, Any]] = []
+            if end > current_candle_start:
+                current_prices = await self._get_historical_prices_from_ig(
+                    epic, resolution, max(start, current_candle_start), end
                 )
 
             prices = await self._cache.prices(
@@ -155,9 +154,30 @@ class IGClient:
                 epic,
                 resolution,
                 self._format_utc(start),
-                self._format_utc(end),
+                self._format_utc(completed_end),
             )
-            return {"prices": prices}
+            return {"prices": prices + current_prices}
+
+    async def _get_historical_prices_from_ig(
+        self, epic: str, resolution: str, start: datetime, end: datetime
+    ) -> list[dict[str, Any]]:
+        params = {
+            "resolution": resolution,
+            "from": self._format_utc(start),
+            "to": self._format_utc(end),
+        }
+        response = await self._request_from_ig(
+            "GET", f"/prices/{epic}", 3, params, None
+        )
+        prices = self._prices_from_response(response)
+        logger.info(
+            "IG price history response: candles=%s resolution=%s from=%s to=%s",
+            len(prices),
+            params["resolution"],
+            params["from"],
+            params["to"],
+        )
+        return prices
 
     async def _request_from_ig(
         self,
@@ -175,7 +195,11 @@ class IGClient:
             response = await self._send(
                 method, path, version=version, params=params, body=body
             )
-        return self._decode(response)
+        payload = self._decode(response)
+        allowance = payload.get("allowance")
+        if allowance is not None:
+            logger.info("IG API allowance: %s", allowance)
+        return payload
 
     async def _store_price_coverage(
         self,
@@ -188,29 +212,29 @@ class IGClient:
     ) -> None:
         if self._cache is None:
             return
-        current_candle_start = self._current_candle_start(resolution)
-        if start < current_candle_start:
-            completed_end = min(end, current_candle_start)
-            await self._cache.store_prices(
-                scope,
-                epic,
-                resolution,
-                self._format_utc(start),
-                self._format_utc(completed_end),
-                253402300799.0,
-                prices,
-            )
-        if end > current_candle_start:
-            volatile_start = max(start, current_candle_start)
-            await self._cache.store_prices(
-                scope,
-                epic,
-                resolution,
-                self._format_utc(volatile_start),
-                self._format_utc(end),
-                time.time() + 60,
-                prices,
-            )
+        completed_prices = [
+            price
+            for price in prices
+            if (timestamp := self._price_timestamp(price)) is None or timestamp < end
+        ]
+        await self._cache.store_prices(
+            scope,
+            epic,
+            resolution,
+            self._format_utc(start),
+            self._format_utc(end),
+            253402300799.0,
+            completed_prices,
+        )
+
+    @staticmethod
+    def _prices_from_response(response: dict[str, Any]) -> list[dict[str, Any]]:
+        prices = response.get("prices", [])
+        if not isinstance(prices, list) or not all(
+            isinstance(price, dict) for price in prices
+        ):
+            raise RuntimeError("Unexpected prices response from IG API")
+        return prices
 
     @staticmethod
     def _current_candle_start(resolution: str) -> datetime:
@@ -273,6 +297,22 @@ class IGClient:
     def _format_utc(value: datetime) -> str:
         return value.astimezone(UTC).isoformat().replace("+00:00", "Z")
 
+    @staticmethod
+    def _price_timestamp(price: dict[str, Any]) -> datetime | None:
+        value = price.get("snapshotTimeUTC")
+        if not isinstance(value, str):
+            return None
+        try:
+            parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+        except ValueError:
+            try:
+                parsed = datetime.strptime(value, "%Y/%m/%d %H:%M:%S")
+            except ValueError:
+                return None
+        if parsed.tzinfo is None:
+            parsed = parsed.replace(tzinfo=UTC)
+        return parsed.astimezone(UTC)
+
     @classmethod
     def _missing_intervals(
         cls,
@@ -317,6 +357,7 @@ class IGClient:
         )
         payload = self._decode(response)
         self._store_tokens(payload)
+        logger.info("Authenticated with IG")
         self._account_id = self._account_id or payload.get("accountId")
         if not self._account_id:
             raise RuntimeError(
@@ -330,6 +371,7 @@ class IGClient:
             json={"refresh_token": self._refresh_token},
         )
         self._store_tokens(self._decode(response))
+        logger.info("Refreshed IG session")
 
     def _store_tokens(self, payload: dict[str, Any]) -> None:
         token = payload.get("oauthToken", payload)
@@ -353,9 +395,25 @@ class IGClient:
         headers = self._base_headers(version=version)
         headers["Authorization"] = f"Bearer {self._access_token}"
         headers["IG-ACCOUNT-ID"] = self._account_id or ""
-        return await self._http.request(
-            method, path, headers=headers, params=params, json=body
+        try:
+            response = await self._http.request(
+                method, path, headers=headers, params=params, json=body
+            )
+        except httpx.HTTPError:
+            logger.exception(
+                "IG API request failed before receiving a response: "
+                "method=%s version=%s",
+                method,
+                version,
+            )
+            raise
+        logger.info(
+            "IG API response: method=%s version=%s status=%s",
+            method,
+            version,
+            response.status_code,
         )
+        return response
 
     def _base_headers(self, *, version: int) -> dict[str, str]:
         return {
@@ -368,6 +426,7 @@ class IGClient:
     @staticmethod
     def _decode(response: httpx.Response) -> dict[str, Any]:
         if response.is_error:
+            logger.warning("IG API returned an error: status=%s", response.status_code)
             raise IGApiError(response)
         if not response.content:
             return {}

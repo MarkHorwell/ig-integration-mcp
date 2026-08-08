@@ -4,6 +4,12 @@ A local Python MCP server for IG's REST Trading API. It provides account/history
 
 Trading leveraged products can result in losses exceeding deposits. Start with an IG demo account.
 
+## Version 0.4.0
+
+- Adds configurable daily-rotated file logging with one prior daily archive retained.
+- Logs historical-price response counts, request parameters, and IG API allowance objects when supplied.
+- Caches only finalized historical candles and requests missing ranges plus the active candle directly from IG.
+
 ## Setup
 
 1. Create a demo or live IG API key in the IG trading platform.
@@ -35,7 +41,7 @@ The server caches categories for 6 hours, category instruments for 1 hour, marke
 
 Trading-sensitive data is never cached: account details, market snapshots, positions, working orders, confirmations, and all write operations. OAuth tokens, API keys, passwords, and HTTP headers are never written to the cache.
 
-Historical price requests use a persistent candle cache. Request an explicit UTC range and the server calls IG only for periods that are not already covered. The current, potentially incomplete candle is refreshed after one minute.
+Historical price requests use a persistent candle cache. Request an explicit UTC range and the server calls IG only for completed periods that are not already covered. The current, potentially incomplete candle is never cached and is fetched from IG for every request.
 
 ```text
 ig_get_historical_prices(
@@ -45,6 +51,12 @@ ig_get_historical_prices(
   to_date="2026-08-01T12:00:00Z",
 )
 ```
+
+## File Logging
+
+Operational logging is enabled by default and writes only to `~/.cache/ig-mcp/ig-mcp.log`, keeping MCP stdout reserved for the protocol. Set `IG_LOG_PATH` to use another location, `IG_LOG_LEVEL` to select `DEBUG`, `INFO`, `WARNING`, `ERROR`, or `CRITICAL`, or `IG_LOG_ENABLED=false` to disable it.
+
+Logs rotate at midnight UTC. The active log and one prior daily archive are retained; older archives are removed automatically.
 
 ## MCP Client Configuration
 
