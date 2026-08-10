@@ -187,12 +187,14 @@ class IGClient:
                     epic, resolution, max(start, current_candle_start), end
                 )
 
-            prices = await self._cache.prices(
-                scope,
-                epic,
-                resolution,
-                self._format_utc(start),
-                self._format_utc(completed_end),
+            prices = self._normalize_prices(
+                await self._cache.prices(
+                    scope,
+                    epic,
+                    resolution,
+                    self._format_utc(start),
+                    self._format_utc(completed_end),
+                )
             )
             api_timestamps = {
                 timestamp
@@ -310,7 +312,21 @@ class IGClient:
             isinstance(price, dict) for price in prices
         ):
             raise RuntimeError("Unexpected prices response from IG API")
-        return prices
+        return IGClient._normalize_prices(prices)
+
+    @classmethod
+    def _normalize_prices(cls, prices: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        """Return candles with canonical ISO-8601 UTC snapshot timestamps."""
+        normalized: list[dict[str, Any]] = []
+        for price in prices:
+            timestamp = cls._price_timestamp(price)
+            if timestamp is None:
+                normalized.append(price)
+            else:
+                normalized.append(
+                    {**price, "snapshotTimeUTC": cls._format_utc(timestamp)}
+                )
+        return normalized
 
     @staticmethod
     def _current_candle_start(resolution: str) -> datetime:

@@ -4,6 +4,10 @@ A local Python MCP server for IG's REST Trading API. It provides account/history
 
 Trading leveraged products can result in losses exceeding deposits. Start with an IG demo account.
 
+## Version 0.6.2
+
+- Normalizes all historical-price `snapshotTimeUTC` response values to ISO-8601 UTC with a `Z` suffix, matching request and cache timestamps.
+
 ## Version 0.6.1
 
 - Sends historical-price datetimes in IG's required offset-free UTC format.
@@ -61,7 +65,7 @@ ig_get_activity(
 
 Trading-sensitive data is never cached: account details, market snapshots, positions, working orders, confirmations, and all write operations. OAuth tokens, API keys, passwords, and HTTP headers are never written to the cache.
 
-Historical price requests use a persistent candle cache. Request an explicit UTC range and the server calls IG only for completed periods that are not already covered. The current, potentially incomplete candle is never cached and is fetched from IG for every request.
+Historical price requests use a persistent candle cache. Request an explicit UTC range and the server calls IG only for completed periods that are not already covered. The current, potentially incomplete candle is never cached and is fetched from IG for every request. Returned candle `snapshotTimeUTC` values always use ISO-8601 UTC with a `Z` suffix.
 
 ```text
 ig_get_historical_prices(

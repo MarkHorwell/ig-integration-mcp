@@ -244,6 +244,8 @@ async def test_historical_prices_fetch_only_uncovered_range(
 
     assert len(first["prices"]) == 1
     assert len(second["prices"]) == 2
+    assert first["prices"][0]["snapshotTimeUTC"] == "2026-08-01T00:30:00Z"
+    assert second["prices"][0]["snapshotTimeUTC"] == "2026-08-01T00:30:00Z"
     assert len(prices.calls) == 2
     assert prices.calls[0].request.url.params["resolution"] == "MINUTE"
     assert prices.calls[1].request.url.params["from"] == "2026-08-01T01:00:00"
