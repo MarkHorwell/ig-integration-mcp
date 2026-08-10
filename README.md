@@ -4,6 +4,11 @@ A local Python MCP server for IG's REST Trading API. It provides account/history
 
 Trading leveraged products can result in losses exceeding deposits. Start with an IG demo account.
 
+## Version 0.6.0
+
+- Normalizes activity-history timestamps to IG's offset-free datetime format and validates date ranges before making the request.
+- Corrects all working-order API routes for IG's live and demo gateways.
+
 ## Version 0.5.0
 
 - Includes safe request method, URL, and body details in non-2xx IG API errors; credentials are redacted.
@@ -38,6 +43,15 @@ The server keeps OAuth tokens in memory only. It sends credentials to IG only du
 Persistent caching is enabled by default to reduce IG API usage. Cached data is stored in `~/.cache/ig-mcp/cache.sqlite3`; set `IG_CACHE_PATH` to use another location or `IG_CACHE_ENABLED=false` to disable cache reads and writes.
 
 The server caches categories for 6 hours, category instruments for 1 hour, market searches for 10 minutes, and activity/transaction history for 5 minutes. A successful trade or working-order change invalidates cached activity and transactions for the active account.
+
+Activity-history requests accept ISO-8601 dates and datetimes. Timezone-aware values are converted to UTC before IG receives them:
+
+```text
+ig_get_activity(
+  from_date="2026-08-10T00:00:00Z",
+  to_date="2026-08-10T05:16:00Z",
+)
+```
 
 Trading-sensitive data is never cached: account details, market snapshots, positions, working orders, confirmations, and all write operations. OAuth tokens, API keys, passwords, and HTTP headers are never written to the cache.
 

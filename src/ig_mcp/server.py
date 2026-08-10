@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import logging
 import secrets
+from datetime import UTC, datetime, timedelta
 from logging.handlers import TimedRotatingFileHandler
 from typing import Any
 
@@ -85,6 +86,19 @@ def with_deal_reference(payload: dict[str, Any]) -> dict[str, Any]:
     return {"dealReference": f"mcp-{secrets.token_hex(12)}", **payload}
 
 
+def format_activity_datetime(value: str) -> tuple[str, datetime, bool]:
+    """Parse an activity date and produce IG's offset-free query value."""
+    try:
+        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError as error:
+        raise ValueError("dates must use ISO-8601 format") from error
+    if len(value) == len("YYYY-MM-DD"):
+        return parsed.date().isoformat(), parsed, True
+    if parsed.tzinfo is not None:
+        parsed = parsed.astimezone(UTC).replace(tzinfo=None)
+    return parsed.strftime("%Y-%m-%dT%H:%M:%S"), parsed, False
+
+
 @mcp.tool()
 async def ig_list_accounts() -> dict[str, Any]:
     """List the accounts available to the authenticated IG client."""
@@ -101,14 +115,18 @@ async def ig_get_account_preferences() -> dict[str, Any]:
 async def ig_get_activity(
     from_date: str, to_date: str, detailed: bool = False, page_size: int = 20
 ) -> dict[str, Any]:
-    """Return active-account history. Dates must use IG's ISO-8601 UTC format."""
+    """Return active-account history for ISO-8601 date and datetime inputs."""
+    formatted_start, start, _ = format_activity_datetime(from_date)
+    formatted_end, end, end_is_date = format_activity_datetime(to_date)
+    if start >= end + timedelta(days=1 if end_is_date else 0):
+        raise ValueError("from_date must be earlier than to_date")
     return await get_client().request(
         "GET",
         "/history/activity",
         version=3,
         params={
-            "from": from_date,
-            "to": to_date,
+            "from": formatted_start,
+            "to": formatted_end,
             "detailed": detailed,
             "pageSize": page_size,
         },
@@ -201,7 +219,7 @@ async def ig_get_position(deal_id: str) -> dict[str, Any]:
 @mcp.tool()
 async def ig_list_working_orders() -> dict[str, Any]:
     """List open working orders in the active account."""
-    return await get_client().request("GET", "/working-orders", version=2)
+    return await get_client().request("GET", "/workingorders", version=2)
 
 
 @mcp.tool()
@@ -266,7 +284,7 @@ async def ig_create_working_order(
     require_write_confirmation(confirm, live_confirmation)
     return await get_client().request(
         "POST",
-        "/working-orders/otc",
+        "/workingorders/otc",
         version=2,
         body=with_deal_reference(parse(CreateWorkingOrder, request)),
     )
@@ -283,7 +301,7 @@ async def ig_update_working_order(
     require_write_confirmation(confirm, live_confirmation)
     return await get_client().request(
         "PUT",
-        f"/working-orders/otc/{deal_id}",
+        f"/workingorders/otc/{deal_id}",
         version=2,
         body=parse(UpdateWorkingOrder, request),
     )
@@ -296,7 +314,7 @@ async def ig_cancel_working_order(
     """Cancel an OTC working order."""
     require_write_confirmation(confirm, live_confirmation)
     return await get_client().request(
-        "DELETE", f"/working-orders/otc/{deal_id}", version=2
+        "DELETE", f"/workingorders/otc/{deal_id}", version=2
     )
 
 
