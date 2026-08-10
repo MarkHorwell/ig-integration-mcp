@@ -246,8 +246,8 @@ async def test_historical_prices_fetch_only_uncovered_range(
     assert len(second["prices"]) == 2
     assert len(prices.calls) == 2
     assert prices.calls[0].request.url.params["resolution"] == "MINUTE"
-    assert prices.calls[1].request.url.params["from"] == "2026-08-01T01:00:00Z"
-    assert prices.calls[1].request.url.params["to"] == "2026-08-01T02:00:00Z"
+    assert prices.calls[1].request.url.params["from"] == "2026-08-01T01:00:00"
+    assert prices.calls[1].request.url.params["to"] == "2026-08-01T02:00:00"
     source_logs = [
         message
         for message in caplog.messages
@@ -317,8 +317,8 @@ async def test_historical_prices_never_cache_current_candle(
     assert len(first["prices"]) == 2
     assert len(second["prices"]) == 2
     assert len(prices.calls) == 3
-    assert prices.calls[1].request.url.params["from"] == "2026-08-01T01:00:00Z"
-    assert prices.calls[2].request.url.params["from"] == "2026-08-01T01:00:00Z"
+    assert prices.calls[1].request.url.params["from"] == "2026-08-01T01:00:00"
+    assert prices.calls[2].request.url.params["from"] == "2026-08-01T01:00:00"
     assert cached == [{"snapshotTimeUTC": "2026-08-01T00:30:00Z", "closePrice": {}}]
 
 
@@ -419,6 +419,85 @@ async def test_historical_prices_refetch_only_deleted_interval(
     assert len(prices.calls) == 4
     assert dict(prices.calls[3].request.url.params) == {
         "resolution": "MINUTE",
-        "from": "2026-08-01T01:00:00Z",
-        "to": "2026-08-01T02:00:00Z",
+        "from": "2026-08-01T01:00:00",
+        "to": "2026-08-01T02:00:00",
     }
+
+
+@respx.mock
+async def test_historical_prices_retries_an_empty_response(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(
+        IGClient,
+        "_current_candle_start",
+        staticmethod(lambda resolution: datetime(2026, 8, 1, 2, tzinfo=UTC)),
+    )
+    respx.post(f"{DEMO_BASE_URL}/session").mock(return_value=login_response())
+    prices = respx.get(f"{DEMO_BASE_URL}/prices/EPIC").mock(
+        side_effect=[
+            httpx.Response(200, json={"prices": []}),
+            httpx.Response(
+                200,
+                json={
+                    "prices": [
+                        {"snapshotTimeUTC": "2026/08/01 00:30:00", "closePrice": {}}
+                    ]
+                },
+            ),
+        ]
+    )
+    settings = cached_settings(tmp_path / "cache.sqlite3")
+    async with httpx.AsyncClient(base_url=DEMO_BASE_URL) as http:
+        client = IGClient(settings, http)
+        first = await client.get_historical_prices(
+            "EPIC", "MINUTE", "2026-08-01T00:00:00Z", "2026-08-01T01:00:00Z"
+        )
+        second = await client.get_historical_prices(
+            "EPIC", "MINUTE", "2026-08-01T00:00:00Z", "2026-08-01T01:00:00Z"
+        )
+
+    assert first == {"prices": []}
+    assert len(second["prices"]) == 1
+    assert len(prices.calls) == 2
+
+
+@respx.mock
+async def test_historical_prices_ignores_existing_empty_coverage(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(
+        IGClient,
+        "_current_candle_start",
+        staticmethod(lambda resolution: datetime(2026, 8, 1, 2, tzinfo=UTC)),
+    )
+    respx.post(f"{DEMO_BASE_URL}/session").mock(return_value=login_response())
+    prices = respx.get(f"{DEMO_BASE_URL}/prices/EPIC").mock(
+        return_value=httpx.Response(
+            200,
+            json={
+                "prices": [
+                    {"snapshotTimeUTC": "2026/08/01 00:30:00", "closePrice": {}}
+                ]
+            },
+        )
+    )
+    settings = cached_settings(tmp_path / "cache.sqlite3")
+    async with httpx.AsyncClient(base_url=DEMO_BASE_URL) as http:
+        client = IGClient(settings, http)
+        await client._ensure_session()
+        await client._cache.store_prices(
+            client._cache_scope(),
+            "EPIC",
+            "MINUTE",
+            "2026-08-01T00:00:00Z",
+            "2026-08-01T01:00:00Z",
+            253402300799.0,
+            [],
+        )
+        result = await client.get_historical_prices(
+            "EPIC", "MINUTE", "2026-08-01T00:00:00Z", "2026-08-01T01:00:00Z"
+        )
+
+    assert len(result["prices"]) == 1
+    assert len(prices.calls) == 1

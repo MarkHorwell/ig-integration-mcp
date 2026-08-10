@@ -156,6 +156,14 @@ class PersistentCache:
                     SELECT start_at, end_at, expires_at FROM price_coverage
                     WHERE scope = ? AND epic = ? AND resolution = ?
                     AND expires_at > ?
+                    AND EXISTS (
+                        SELECT 1 FROM prices
+                        WHERE prices.scope = price_coverage.scope
+                        AND prices.epic = price_coverage.epic
+                        AND prices.resolution = price_coverage.resolution
+                        AND prices.snapshot_time >= price_coverage.start_at
+                        AND prices.snapshot_time < price_coverage.end_at
+                    )
                     """,
                     (scope, epic, resolution, time.time()),
                 ).fetchall()

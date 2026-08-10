@@ -4,6 +4,12 @@ A local Python MCP server for IG's REST Trading API. It provides account/history
 
 Trading leveraged products can result in losses exceeding deposits. Start with an IG demo account.
 
+## Version 0.6.1
+
+- Sends historical-price datetimes in IG's required offset-free UTC format.
+- Retries empty or malformed historical-price responses instead of caching them as permanently covered periods.
+- Automatically ignores existing empty historical-price cache coverage.
+
 ## Version 0.6.0
 
 - Normalizes activity-history timestamps to IG's offset-free datetime format and validates date ranges before making the request.

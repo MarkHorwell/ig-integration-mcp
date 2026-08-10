@@ -1,6 +1,6 @@
 [project]
 name = "ig-trading-mcp"
-version = "0.6.0"
+version = "0.6.1"
 description = "MCP server for the IG REST trading API"
 readme = "README.md"
 requires-python = ">=3.11"

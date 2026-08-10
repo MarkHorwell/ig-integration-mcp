@@ -219,8 +219,8 @@ class IGClient:
     ) -> list[dict[str, Any]]:
         params = {
             "resolution": resolution,
-            "from": self._format_utc(start),
-            "to": self._format_utc(end),
+            "from": self._format_ig_datetime(start),
+            "to": self._format_ig_datetime(end),
         }
         response = await self._request_from_ig(
             "GET", f"/prices/{epic}", 3, params, None
@@ -287,8 +287,12 @@ class IGClient:
         completed_prices = [
             price
             for price in prices
-            if (timestamp := self._price_timestamp(price)) is None or timestamp < end
+            if (timestamp := self._price_timestamp(price)) is not None
+            and timestamp < end
         ]
+        if not completed_prices:
+            # An empty or malformed response must be retried, not cached forever.
+            return
         await self._cache.store_prices(
             scope,
             epic,
@@ -368,6 +372,11 @@ class IGClient:
     @staticmethod
     def _format_utc(value: datetime) -> str:
         return value.astimezone(UTC).isoformat().replace("+00:00", "Z")
+
+    @staticmethod
+    def _format_ig_datetime(value: datetime) -> str:
+        """Format a UTC datetime as required by IG price-history queries."""
+        return value.astimezone(UTC).strftime("%Y-%m-%dT%H:%M:%S")
 
     @staticmethod
     def _price_timestamp(price: dict[str, Any]) -> datetime | None:
