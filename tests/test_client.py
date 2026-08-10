@@ -476,9 +476,7 @@ async def test_historical_prices_ignores_existing_empty_coverage(
         return_value=httpx.Response(
             200,
             json={
-                "prices": [
-                    {"snapshotTimeUTC": "2026/08/01 00:30:00", "closePrice": {}}
-                ]
+                "prices": [{"snapshotTimeUTC": "2026/08/01 00:30:00", "closePrice": {}}]
             },
         )
     )
