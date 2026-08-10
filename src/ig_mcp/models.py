@@ -1,14 +1,32 @@
 from __future__ import annotations
 
+from datetime import UTC, datetime
 from enum import StrEnum
 from typing import Any
 
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    field_serializer,
+    field_validator,
+    model_validator,
+)
+
+from .temporal import parse_offset_datetime
 
 
 def to_camel(name: str) -> str:
     first, *rest = name.split("_")
     return first + "".join(word.title() for word in rest)
+
+
+def parse_good_till_date(value: Any) -> datetime | None:
+    if value is None:
+        return None
+    if not isinstance(value, str):
+        raise ValueError("good_till_date must use ISO-8601 datetime format")
+    return parse_offset_datetime(value, "good_till_date")
 
 
 class Direction(StrEnum):
@@ -182,15 +200,22 @@ class CreateWorkingOrder(IGModel):
     type: WorkingOrderType
     time_in_force: WorkingTimeInForce
     force_open: bool | None = None
-    good_till_date: str | None = None
+    good_till_date: datetime | None = None
     deal_reference: str | None = Field(default=None, pattern=r"^[A-Za-z0-9_-]{1,30}$")
     limit_distance: float | None = Field(default=None, gt=0)
     limit_level: float | None = None
     stop_distance: float | None = Field(default=None, gt=0)
     stop_level: float | None = None
 
+    @field_validator("good_till_date", mode="before")
+    @classmethod
+    def validate_good_till_date(cls, value: Any) -> datetime | None:
+        return parse_good_till_date(value)
+
     @model_validator(mode="after")
     def validate_order(self) -> CreateWorkingOrder:
+        if self.good_till_date is not None and self.good_till_date.tzinfo is None:
+            raise ValueError("good_till_date must include a UTC offset")
         if self.limit_distance is not None and self.limit_level is not None:
             raise ValueError("Specify only one of limit_distance and limit_level")
         if self.stop_distance is not None and self.stop_level is not None:
@@ -204,20 +229,35 @@ class CreateWorkingOrder(IGModel):
             raise ValueError("GOOD_TILL_DATE requires good_till_date")
         return self
 
+    @field_serializer("good_till_date")
+    def serialize_good_till_date(self, value: datetime | None) -> str | None:
+        if value is None:
+            return None
+        if value.tzinfo is None:
+            raise ValueError("good_till_date must include a UTC offset")
+        return value.astimezone(UTC).strftime("%Y/%m/%d %H:%M:%S")
+
 
 class UpdateWorkingOrder(IGModel):
     level: float
     type: WorkingOrderType
     time_in_force: WorkingTimeInForce
-    good_till_date: str | None = None
+    good_till_date: datetime | None = None
     guaranteed_stop: bool | None = None
     limit_distance: float | None = Field(default=None, gt=0)
     limit_level: float | None = None
     stop_distance: float | None = Field(default=None, gt=0)
     stop_level: float | None = None
 
+    @field_validator("good_till_date", mode="before")
+    @classmethod
+    def validate_good_till_date(cls, value: Any) -> datetime | None:
+        return parse_good_till_date(value)
+
     @model_validator(mode="after")
     def validate_order(self) -> UpdateWorkingOrder:
+        if self.good_till_date is not None and self.good_till_date.tzinfo is None:
+            raise ValueError("good_till_date must include a UTC offset")
         if self.limit_distance is not None and self.limit_level is not None:
             raise ValueError("Specify only one of limit_distance and limit_level")
         if self.stop_distance is not None and self.stop_level is not None:
@@ -230,3 +270,11 @@ class UpdateWorkingOrder(IGModel):
         ):
             raise ValueError("GOOD_TILL_DATE requires good_till_date")
         return self
+
+    @field_serializer("good_till_date")
+    def serialize_good_till_date(self, value: datetime | None) -> str | None:
+        if value is None:
+            return None
+        if value.tzinfo is None:
+            raise ValueError("good_till_date must include a UTC offset")
+        return value.astimezone(UTC).strftime("%Y/%m/%d %H:%M:%S")

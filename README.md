@@ -4,6 +4,12 @@ A local Python MCP server for IG's REST Trading API. It provides account/history
 
 Trading leveraged products can result in losses exceeding deposits. Start with an IG demo account.
 
+## Version 0.7.0
+
+- All tools require an IANA `timezone`, such as `Australia/Sydney`.
+- Temporal inputs require ISO-8601 datetimes with an explicit UTC offset.
+- IG response timestamps are converted to the requested timezone, including daylight-saving offsets.
+
 ## Version 0.6.2
 
 - Normalizes all historical-price `snapshotTimeUTC` response values to ISO-8601 UTC with a `Z` suffix, matching request and cache timestamps.
@@ -54,25 +60,27 @@ Persistent caching is enabled by default to reduce IG API usage. Cached data is 
 
 The server caches categories for 6 hours, category instruments for 1 hour, market searches for 10 minutes, and activity/transaction history for 5 minutes. A successful trade or working-order change invalidates cached activity and transactions for the active account.
 
-Activity-history requests accept ISO-8601 dates and datetimes. Timezone-aware values are converted to UTC before IG receives them:
+All tools require an IANA `timezone` so timestamp responses use the caller's local offset, including daylight-saving changes. Temporal inputs must be ISO-8601 datetimes with an explicit UTC offset. The service converts them to IG's required UTC format before forwarding the request:
 
 ```text
 ig_get_activity(
-  from_date="2026-08-10T00:00:00Z",
-  to_date="2026-08-10T05:16:00Z",
+  from_date="2026-08-10T10:00:00+10:00",
+  to_date="2026-08-10T15:16:00+10:00",
+  timezone="Australia/Sydney",
 )
 ```
 
 Trading-sensitive data is never cached: account details, market snapshots, positions, working orders, confirmations, and all write operations. OAuth tokens, API keys, passwords, and HTTP headers are never written to the cache.
 
-Historical price requests use a persistent candle cache. Request an explicit UTC range and the server calls IG only for completed periods that are not already covered. The current, potentially incomplete candle is never cached and is fetched from IG for every request. Returned candle `snapshotTimeUTC` values always use ISO-8601 UTC with a `Z` suffix.
+Historical price requests use a persistent candle cache. Request an explicit offset-aware range and the server calls IG only for completed periods that are not already covered. The current, potentially incomplete candle is never cached and is fetched from IG for every request. Returned candle timestamps use the requested timezone; cache timestamps remain UTC internally.
 
 ```text
 ig_get_historical_prices(
   epic="CS.D.EURUSD.CFD.IP",
   resolution="MINUTE",
-  from_date="2026-08-01T00:00:00Z",
-  to_date="2026-08-01T12:00:00Z",
+  from_date="2026-08-01T10:00:00+10:00",
+  to_date="2026-08-01T22:00:00+10:00",
+  timezone="Australia/Sydney",
 )
 ```
 
