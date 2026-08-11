@@ -4,6 +4,11 @@ A local Python MCP server for IG's REST Trading API. It provides account/history
 
 Trading leveraged products can result in losses exceeding deposits. Start with an IG demo account.
 
+## Version 0.8.0
+
+- Adds `ig_get_current_candle`, backed by IG Lightstreamer consolidated chart subscriptions for forming OHLC candles at second, one-minute, five-minute, and hourly resolutions.
+- Reuses in-memory subscriptions and latest candle snapshots, with clean shutdown and idle-subscription cleanup.
+
 ## Version 0.7.0
 
 - All tools require an IANA `timezone`, such as `Australia/Sydney`.
@@ -83,6 +88,27 @@ ig_get_historical_prices(
   timezone="Australia/Sydney",
 )
 ```
+
+## Streaming Current Candles
+
+`ig_get_current_candle` subscribes to IG's Lightstreamer chart feed the first time
+an epic and resolution are requested. The server keeps the latest forming candle
+in memory and later calls return the newest received snapshot without a REST
+price request. It supports `SECOND`, `MINUTE`, `MINUTE_5`, and `HOUR`.
+
+```text
+ig_get_current_candle(
+  epic="CS.D.EURUSD.CFD.IP",
+  resolution="MINUTE",
+  timezone="Australia/Sydney",
+)
+```
+
+The response includes IG's bid and ask OHLC values, update time, tick count, and
+`consolidated`, which becomes true when IG closes the candle. Call the tool again
+to get later updates: MCP tool responses cannot be pushed to an agent after a
+tool call returns. Idle subscriptions are removed when a later streaming request
+arrives; streaming data is never persisted.
 
 ## File Logging
 

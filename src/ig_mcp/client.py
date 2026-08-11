@@ -16,6 +16,16 @@ from .config import Settings
 logger = logging.getLogger(__name__)
 
 
+class StreamingCredentials:
+    """Short-lived credentials and endpoint needed by IG Lightstreamer."""
+
+    def __init__(self, endpoint: str, account_id: str, cst: str, xst: str) -> None:
+        self.endpoint = endpoint
+        self.account_id = account_id
+        self.cst = cst
+        self.xst = xst
+
+
 class IGApiError(RuntimeError):
     def __init__(self, response: httpx.Response):
         try:
@@ -215,6 +225,24 @@ class IGClient:
                 cached_prices, api_completed + current_prices
             )
             return {"prices": prices + current_prices}
+
+    async def get_streaming_credentials(self) -> StreamingCredentials:
+        """Get IG's non-OAuth tokens required by its Lightstreamer service."""
+        await self._ensure_session()
+        response = await self._send(
+            "GET",
+            "/session",
+            version=1,
+            params={"fetchSessionTokens": "true"},
+            body=None,
+        )
+        payload = self._decode(response)
+        endpoint = payload.get("lightstreamerEndpoint")
+        cst = response.headers.get("CST")
+        xst = response.headers.get("X-SECURITY-TOKEN")
+        if not isinstance(endpoint, str) or not cst or not xst or not self._account_id:
+            raise RuntimeError("IG session did not provide Lightstreamer credentials")
+        return StreamingCredentials(endpoint, self._account_id, cst, xst)
 
     async def _get_historical_prices_from_ig(
         self, epic: str, resolution: str, start: datetime, end: datetime

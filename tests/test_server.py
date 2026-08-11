@@ -9,6 +9,7 @@ from ig_mcp.server import (
     ig_cancel_working_order,
     ig_create_working_order,
     ig_get_activity,
+    ig_get_current_candle,
     ig_get_market,
     ig_get_transactions,
     ig_list_working_orders,
@@ -41,6 +42,15 @@ class RequestClient:
     async def request(self, method: str, path: str, **kwargs) -> dict[str, object]:
         self.calls.append((method, path, kwargs))
         return {}
+
+
+class StreamingClient:
+    def __init__(self) -> None:
+        self.request: tuple[str, str] | None = None
+
+    async def current_candle(self, epic: str, resolution: str) -> dict[str, object]:
+        self.request = (epic, resolution)
+        return {"snapshotTimeUTC": "2026-08-01T00:00:00Z"}
 
 
 async def test_activity_converts_sydney_datetimes_to_ig_format(
@@ -121,6 +131,18 @@ async def test_responses_use_requested_timezone_and_dst_offset(
         "snapshotTimeUTC": "2026-01-01T11:00:00+11:00",
         "nested": {"createdDate": "2026-08-01T10:00:00+10:00"},
     }
+
+
+async def test_current_candle_uses_streaming_manager_and_timezone(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    client = StreamingClient()
+    monkeypatch.setattr("ig_mcp.server.get_streaming", lambda: client)
+
+    result = await ig_get_current_candle("EPIC", "MINUTE", "Australia/Sydney")
+
+    assert client.request == ("EPIC", "MINUTE")
+    assert result == {"candle": {"snapshotTimeUTC": "2026-08-01T10:00:00+10:00"}}
 
 
 async def _response_with_timestamps() -> dict[str, object]:

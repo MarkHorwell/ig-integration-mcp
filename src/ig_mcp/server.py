@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import logging
 import secrets
+from contextlib import asynccontextmanager
 from datetime import datetime
 from logging.handlers import TimedRotatingFileHandler
 from typing import Any
@@ -18,6 +19,7 @@ from .models import (
     UpdatePosition,
     UpdateWorkingOrder,
 )
+from .streaming import StreamingCandleManager
 from .temporal import (
     format_ig_date,
     format_ig_datetime,
@@ -26,8 +28,25 @@ from .temporal import (
     timezone_for,
 )
 
-mcp = FastMCP("IG Trading")
 _client: IGClient | None = None
+_streaming: StreamingCandleManager | None = None
+
+
+@asynccontextmanager
+async def lifespan(_: FastMCP):
+    try:
+        yield
+    finally:
+        global _client, _streaming
+        if _streaming is not None:
+            await _streaming.close()
+            _streaming = None
+        if _client is not None:
+            await _client.close()
+            _client = None
+
+
+mcp = FastMCP("IG Trading", lifespan=lifespan)
 
 
 def configure_logging(settings: Settings) -> None:
@@ -65,6 +84,13 @@ def get_client() -> IGClient:
     if _client is None:
         _client = IGClient(Settings.from_environment())
     return _client
+
+
+def get_streaming() -> StreamingCandleManager:
+    global _streaming
+    if _streaming is None:
+        _streaming = StreamingCandleManager(get_client().get_streaming_credentials)
+    return _streaming
 
 
 def parse(model: type[Any], request: dict[str, Any]) -> dict[str, Any]:
@@ -217,6 +243,21 @@ async def ig_get_historical_prices(
     return response(
         await get_client().get_historical_prices(epic, resolution, from_date, to_date),
         timezone,
+    )
+
+
+@mcp.tool()
+async def ig_get_current_candle(
+    epic: str, resolution: str, timezone: str
+) -> dict[str, Any]:
+    """Get the latest forming IG chart candle via a shared streaming subscription.
+
+    Supported resolutions are SECOND, MINUTE, MINUTE_5, and HOUR. Call again for
+    a newer snapshot; MCP tool responses cannot be pushed after they return.
+    """
+    timezone_for(timezone)
+    return response(
+        {"candle": await get_streaming().current_candle(epic, resolution)}, timezone
     )
 
 

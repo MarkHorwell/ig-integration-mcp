@@ -171,6 +171,27 @@ async def test_client_refreshes_after_an_unauthorized_request(
 
 
 @respx.mock
+async def test_client_gets_lightstreamer_credentials(settings: Settings) -> None:
+    respx.post(f"{DEMO_BASE_URL}/session").mock(return_value=login_response())
+    session = respx.get(f"{DEMO_BASE_URL}/session").mock(
+        return_value=httpx.Response(
+            200,
+            headers={"CST": "cst", "X-SECURITY-TOKEN": "xst"},
+            json={"lightstreamerEndpoint": "https://stream.example"},
+        )
+    )
+    async with httpx.AsyncClient(base_url=DEMO_BASE_URL) as http:
+        client = IGClient(settings, http)
+        credentials = await client.get_streaming_credentials()
+
+    assert credentials.endpoint == "https://stream.example"
+    assert credentials.account_id == "ABC"
+    assert credentials.cst == "cst"
+    assert credentials.xst == "xst"
+    assert session.calls[0].request.url.params["fetchSessionTokens"] == "true"
+
+
+@respx.mock
 async def test_cached_get_persists_across_clients(tmp_path: Path) -> None:
     respx.post(f"{DEMO_BASE_URL}/session").mock(return_value=login_response())
     categories = respx.get(f"{DEMO_BASE_URL}/categories").mock(
