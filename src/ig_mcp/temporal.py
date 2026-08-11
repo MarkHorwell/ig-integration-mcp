@@ -45,9 +45,7 @@ def _convert_value(value: Any, zone: ZoneInfo) -> Any:
     if isinstance(value, dict):
         snapshot_utc = value.get("snapshotTimeUTC")
         canonical_snapshot = (
-            _parse_ig_datetime(snapshot_utc)
-            if isinstance(snapshot_utc, str)
-            else None
+            _parse_ig_datetime(snapshot_utc) if isinstance(snapshot_utc, str) else None
         )
         return {
             key: (
