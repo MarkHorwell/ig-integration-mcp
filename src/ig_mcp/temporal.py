@@ -43,8 +43,20 @@ def format_response_timestamps(
 
 def _convert_value(value: Any, zone: ZoneInfo) -> Any:
     if isinstance(value, dict):
+        snapshot_utc = value.get("snapshotTimeUTC")
+        canonical_snapshot = (
+            _parse_ig_datetime(snapshot_utc)
+            if isinstance(snapshot_utc, str)
+            else None
+        )
         return {
-            key: _convert_temporal_value(key, item, zone) for key, item in value.items()
+            key: (
+                canonical_snapshot.astimezone(zone).isoformat()
+                if canonical_snapshot is not None
+                and key in {"snapshotTime", "snapshotTimeUTC"}
+                else _convert_temporal_value(key, item, zone)
+            )
+            for key, item in value.items()
         }
     if isinstance(value, list):
         return [_convert_value(item, zone) for item in value]

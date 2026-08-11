@@ -4,6 +4,12 @@ A local Python MCP server for IG's REST Trading API. It provides account/history
 
 Trading leveraged products can result in losses exceeding deposits. Start with an IG demo account.
 
+## Version 0.8.4
+
+- Makes `snapshotTime` and `snapshotTimeUTC` represent the same instant in the requested timezone, using IG's authoritative UTC candle timestamp.
+- Caches completed historical candles only for their actual resolution intervals, so sparse or capped IG responses leave gaps eligible for refetch rather than marking an entire request as complete.
+- Automatically clears legacy historical-price coverage when opening an existing cache database.
+
 ## Version 0.8.3
 
 - Adds `HOUR_4` and `DAY` support to `ig_get_current_candle`, aggregating hourly stream candles in IG-aligned market-session windows.
@@ -90,7 +96,16 @@ ig_get_activity(
 
 Trading-sensitive data is never cached: account details, market snapshots, positions, working orders, confirmations, and all write operations. OAuth tokens, API keys, passwords, and HTTP headers are never written to the cache.
 
-Historical price requests use a persistent candle cache. Request an explicit offset-aware range and the server calls IG only for completed periods that are not already covered. The current, potentially incomplete candle is never cached and is fetched from IG for every request. Returned candle timestamps use the requested timezone; cache timestamps remain UTC internally.
+Historical price requests use a persistent candle cache. Request an explicit offset-aware range and the server calls IG only for completed candle intervals that are not already covered. Sparse or capped responses do not mark missing intervals as cached. The current, potentially incomplete candle is never cached and is fetched from IG for every request. Returned candle timestamps use the requested timezone; `snapshotTime` and `snapshotTimeUTC` identify the same instant; cache timestamps remain UTC internally.
+
+Version 0.8.4 clears legacy coverage metadata automatically. To force a complete historical-price refresh, stop the server and clear both price-cache tables, then restart it:
+
+```bash
+sqlite3 "$IG_CACHE_PATH" \
+  "BEGIN; DELETE FROM price_coverage; DELETE FROM prices; COMMIT; VACUUM;"
+```
+
+When `IG_CACHE_PATH` is unset, use `~/.cache/ig-mcp/cache.sqlite3` instead.
 
 ```text
 ig_get_historical_prices(

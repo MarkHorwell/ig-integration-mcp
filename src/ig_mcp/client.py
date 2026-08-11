@@ -180,7 +180,7 @@ class IGClient:
                         price
                         for price in prices
                         if (timestamp := self._price_timestamp(price)) is not None
-                        and timestamp < missing_end
+                        and missing_start <= timestamp < missing_end
                     )
                     await self._store_price_coverage(
                         scope,
@@ -224,7 +224,7 @@ class IGClient:
             self._log_historical_price_sources(
                 cached_prices, api_completed + current_prices
             )
-            return {"prices": prices + current_prices}
+            return {"prices": self._merge_prices(prices, current_prices)}
 
     async def get_streaming_credentials(self) -> StreamingCredentials:
         """Get IG's non-OAuth tokens required by its Lightstreamer service."""
@@ -318,7 +318,7 @@ class IGClient:
             price
             for price in prices
             if (timestamp := self._price_timestamp(price)) is not None
-            and timestamp < end
+            and start <= timestamp < end
         ]
         if not completed_prices:
             # An empty or malformed response must be retried, not cached forever.
@@ -355,6 +355,21 @@ class IGClient:
                     {**price, "snapshotTimeUTC": cls._format_utc(timestamp)}
                 )
         return normalized
+
+    @classmethod
+    def _merge_prices(
+        cls, cached_prices: list[dict[str, Any]], current_prices: list[dict[str, Any]]
+    ) -> list[dict[str, Any]]:
+        """Combine price sources by canonical timestamp, preferring live data."""
+        merged: dict[datetime, dict[str, Any]] = {}
+        malformed: list[dict[str, Any]] = []
+        for price in cls._normalize_prices(cached_prices + current_prices):
+            timestamp = cls._price_timestamp(price)
+            if timestamp is None:
+                malformed.append(price)
+            else:
+                merged[timestamp] = price
+        return [merged[timestamp] for timestamp in sorted(merged)] + malformed
 
     @staticmethod
     def _current_candle_start(resolution: str) -> datetime:

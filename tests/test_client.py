@@ -1,6 +1,6 @@
 import logging
 import sqlite3
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 import httpx
@@ -18,6 +18,31 @@ def settings() -> Settings:
 
 def cached_settings(cache_path: Path) -> Settings:
     return Settings("key", "user", "password", "demo", None, True, cache_path)
+
+
+@pytest.mark.asyncio
+async def test_price_cache_only_covers_returned_candle_intervals(
+    tmp_path: Path,
+) -> None:
+    cache_path = tmp_path / "cache.sqlite3"
+    settings = cached_settings(cache_path)
+    async with httpx.AsyncClient(base_url=DEMO_BASE_URL) as http:
+        client = IGClient(settings, http)
+        assert client._cache is not None
+        await client._cache.store_prices(
+            "scope",
+            "EPIC",
+            "MINUTE_15",
+            "2026-08-01T00:00:00Z",
+            "2026-08-01T01:00:00Z",
+            253402300799.0,
+            [{"snapshotTimeUTC": "2026-08-01T00:30:00Z"}],
+        )
+        coverage = await client._cache.price_coverage("scope", "EPIC", "MINUTE_15")
+
+    assert coverage == [
+        ("2026-08-01T00:30:00Z", "2026-08-01T00:45:00Z", 253402300799.0)
+    ]
 
 
 def login_response() -> httpx.Response:
@@ -247,6 +272,14 @@ async def test_historical_prices_fetch_only_uncovered_range(
                 200,
                 json={
                     "prices": [
+                        {"snapshotTimeUTC": "2026/08/01 00:00:00", "closePrice": {}}
+                    ]
+                },
+            ),
+            httpx.Response(
+                200,
+                json={
+                    "prices": [
                         {"snapshotTimeUTC": "2026/08/01 01:30:00", "closePrice": {}}
                     ]
                 },
@@ -264,13 +297,13 @@ async def test_historical_prices_fetch_only_uncovered_range(
         )
 
     assert len(first["prices"]) == 1
-    assert len(second["prices"]) == 2
+    assert len(second["prices"]) == 3
     assert first["prices"][0]["snapshotTimeUTC"] == "2026-08-01T00:30:00Z"
-    assert second["prices"][0]["snapshotTimeUTC"] == "2026-08-01T00:30:00Z"
-    assert len(prices.calls) == 2
+    assert second["prices"][0]["snapshotTimeUTC"] == "2026-08-01T00:00:00Z"
+    assert len(prices.calls) == 3
     assert prices.calls[0].request.url.params["resolution"] == "MINUTE"
-    assert prices.calls[1].request.url.params["from"] == "2026-08-01T01:00:00"
-    assert prices.calls[1].request.url.params["to"] == "2026-08-01T02:00:00"
+    assert prices.calls[1].request.url.params["to"] == "2026-08-01T00:30:00"
+    assert prices.calls[2].request.url.params["from"] == "2026-08-01T00:31:00"
     source_logs = [
         message
         for message in caplog.messages
@@ -278,7 +311,7 @@ async def test_historical_prices_fetch_only_uncovered_range(
     ]
     assert "cache_candles=0 cache_bytes=0 api_candles=1 api_bytes=" in source_logs[0]
     assert "cache_candles=1 cache_bytes=" in source_logs[1]
-    assert "api_candles=1 api_bytes=" in source_logs[1]
+    assert "api_candles=2 api_bytes=" in source_logs[1]
 
 
 @respx.mock
@@ -314,6 +347,18 @@ async def test_historical_prices_never_cache_current_candle(
                 200,
                 json={
                     "prices": [
+                        {"snapshotTimeUTC": "2026-08-01T00:00:00Z", "closePrice": {}}
+                    ]
+                },
+            ),
+            httpx.Response(
+                200,
+                json={"prices": []},
+            ),
+            httpx.Response(
+                200,
+                json={
+                    "prices": [
                         {"snapshotTimeUTC": "2026-08-01T01:00:00Z", "closePrice": {}}
                     ]
                 },
@@ -338,11 +383,11 @@ async def test_historical_prices_never_cache_current_candle(
         )
 
     assert len(first["prices"]) == 2
-    assert len(second["prices"]) == 2
-    assert len(prices.calls) == 3
+    assert len(second["prices"]) == 3
+    assert len(prices.calls) == 5
     assert prices.calls[1].request.url.params["from"] == "2026-08-01T01:00:00"
-    assert prices.calls[2].request.url.params["from"] == "2026-08-01T01:00:00"
-    assert cached == [{"snapshotTimeUTC": "2026-08-01T00:30:00Z", "closePrice": {}}]
+    assert prices.calls[4].request.url.params["from"] == "2026-08-01T01:00:00"
+    assert all(price["snapshotTimeUTC"] != "2026-08-01T01:00:00Z" for price in cached)
 
 
 @respx.mock
@@ -356,54 +401,36 @@ async def test_historical_prices_refetch_only_deleted_interval(
     )
     respx.post(f"{DEMO_BASE_URL}/session").mock(return_value=login_response())
     prices = respx.get(f"{DEMO_BASE_URL}/prices/EPIC").mock(
-        side_effect=[
-            httpx.Response(
-                200,
-                json={
-                    "prices": [
-                        {"snapshotTimeUTC": "2026-08-01T00:30:00Z", "closePrice": {}}
-                    ]
-                },
-            ),
-            httpx.Response(
-                200,
-                json={
-                    "prices": [
-                        {"snapshotTimeUTC": "2026-08-01T01:30:00Z", "closePrice": {}}
-                    ]
-                },
-            ),
-            httpx.Response(
-                200,
-                json={
-                    "prices": [
-                        {"snapshotTimeUTC": "2026-08-01T02:30:00Z", "closePrice": {}}
-                    ]
-                },
-            ),
-            httpx.Response(
-                200,
-                json={
-                    "prices": [
-                        {"snapshotTimeUTC": "2026-08-01T01:30:00Z", "closePrice": {}}
-                    ]
-                },
-            ),
-        ]
+        return_value=httpx.Response(
+            200,
+            json={"prices": [{"snapshotTimeUTC": "2026-08-01T01:00:00Z"}]},
+        )
     )
     cache_path = tmp_path / "cache.sqlite3"
     settings = cached_settings(cache_path)
     async with httpx.AsyncClient(base_url=DEMO_BASE_URL) as http:
         client = IGClient(settings, http)
-        for hour in range(3):
-            await client.get_historical_prices(
-                "EPIC",
-                "MINUTE",
-                f"2026-08-01T0{hour}:00:00Z",
-                f"2026-08-01T0{hour + 1}:00:00Z",
-            )
-
+        await client._ensure_session()
         scope = client._cache_scope()
+        assert client._cache is not None
+        await client._cache.store_prices(
+            scope,
+            "EPIC",
+            "MINUTE",
+            "2026-08-01T00:00:00Z",
+            "2026-08-01T03:00:00Z",
+            253402300799.0,
+            [
+                {
+                    "snapshotTimeUTC": (
+                        datetime(2026, 8, 1, tzinfo=UTC) + timedelta(minutes=minute)
+                    )
+                    .isoformat()
+                    .replace("+00:00", "Z")
+                }
+                for minute in range(180)
+            ],
+        )
         with sqlite3.connect(cache_path) as connection:
             connection.execute(
                 """
@@ -416,7 +443,7 @@ async def test_historical_prices_refetch_only_deleted_interval(
                     "EPIC",
                     "MINUTE",
                     "2026-08-01T01:00:00Z",
-                    "2026-08-01T02:00:00Z",
+                    "2026-08-01T01:01:00Z",
                 ),
             )
             connection.execute(
@@ -430,7 +457,7 @@ async def test_historical_prices_refetch_only_deleted_interval(
                     "EPIC",
                     "MINUTE",
                     "2026-08-01T01:00:00Z",
-                    "2026-08-01T02:00:00Z",
+                    "2026-08-01T01:01:00Z",
                 ),
             )
 
@@ -438,12 +465,12 @@ async def test_historical_prices_refetch_only_deleted_interval(
             "EPIC", "MINUTE", "2026-08-01T00:00:00Z", "2026-08-01T03:00:00Z"
         )
 
-    assert len(result["prices"]) == 3
-    assert len(prices.calls) == 4
-    assert dict(prices.calls[3].request.url.params) == {
+    assert len(result["prices"]) == 180
+    assert len(prices.calls) == 1
+    assert dict(prices.calls[0].request.url.params) == {
         "resolution": "MINUTE",
         "from": "2026-08-01T01:00:00",
-        "to": "2026-08-01T02:00:00",
+        "to": "2026-08-01T01:01:00",
     }
 
 

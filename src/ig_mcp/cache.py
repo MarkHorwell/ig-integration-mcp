@@ -4,7 +4,7 @@ import asyncio
 import json
 import sqlite3
 import time
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
@@ -101,6 +101,11 @@ class PersistentCache:
             )
             """
         )
+        cache_version = connection.execute("PRAGMA user_version").fetchone()[0]
+        if cache_version < 2:
+            # Earlier versions marked every non-empty response as complete coverage.
+            connection.execute("DELETE FROM price_coverage")
+            connection.execute("PRAGMA user_version = 2")
         return connection
 
     def _get_response(self, key: str) -> dict[str, Any] | None:
@@ -183,10 +188,20 @@ class PersistentCache:
     ) -> None:
         try:
             with self._connect() as connection:
-                connection.execute(
-                    "INSERT OR REPLACE INTO price_coverage VALUES (?, ?, ?, ?, ?, ?)",
-                    (scope, epic, resolution, start, end, expires_at),
-                )
+                coverage = self._price_intervals(resolution, prices)
+                for covered_start, covered_end in coverage:
+                    connection.execute(
+                        "INSERT OR REPLACE INTO price_coverage "
+                        "VALUES (?, ?, ?, ?, ?, ?)",
+                        (
+                            scope,
+                            epic,
+                            resolution,
+                            covered_start,
+                            covered_end,
+                            expires_at,
+                        ),
+                    )
                 for price in prices:
                     timestamp = self._snapshot_time(price)
                     if timestamp is None:
@@ -213,7 +228,7 @@ class PersistentCache:
                     """
                     SELECT payload FROM prices
                     WHERE scope = ? AND epic = ? AND resolution = ?
-                    AND snapshot_time >= ? AND snapshot_time <= ?
+                    AND snapshot_time >= ? AND snapshot_time < ?
                     ORDER BY snapshot_time
                     """,
                     (scope, epic, resolution, start, end),
@@ -239,3 +254,52 @@ class PersistentCache:
         if parsed.tzinfo is None:
             parsed = parsed.replace(tzinfo=UTC)
         return parsed.astimezone(UTC).isoformat().replace("+00:00", "Z")
+
+    @classmethod
+    def _price_intervals(
+        cls, resolution: str, prices: list[dict[str, Any]]
+    ) -> list[tuple[str, str]]:
+        duration = _resolution_duration(resolution)
+        if duration is None:
+            return []
+        timestamps = sorted(
+            {
+                datetime.fromisoformat(timestamp.replace("Z", "+00:00"))
+                for price in prices
+                if (timestamp := cls._snapshot_time(price)) is not None
+            }
+        )
+        if not timestamps:
+            return []
+
+        return [
+            (
+                timestamp.astimezone(UTC).isoformat().replace("+00:00", "Z"),
+                (timestamp + duration)
+                .astimezone(UTC)
+                .isoformat()
+                .replace("+00:00", "Z"),
+            )
+            for timestamp in timestamps
+        ]
+
+
+def _resolution_duration(resolution: str) -> timedelta | None:
+    minutes = {
+        "SECOND": 1 / 60,
+        "MINUTE": 1,
+        "MINUTE_2": 2,
+        "MINUTE_3": 3,
+        "MINUTE_5": 5,
+        "MINUTE_10": 10,
+        "MINUTE_15": 15,
+        "MINUTE_30": 30,
+        "HOUR": 60,
+        "HOUR_2": 120,
+        "HOUR_3": 180,
+        "HOUR_4": 240,
+        "DAY": 1440,
+        "WEEK": 10080,
+    }
+    value = minutes.get(resolution)
+    return timedelta(minutes=value) if value is not None else None
