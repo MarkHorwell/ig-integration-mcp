@@ -131,9 +131,9 @@ class StreamingCandleManager:
                     continue
                 start = _timestamp(timestamp)
                 if window_start <= start < current_start:
-                    self._segments.setdefault(epic, {})[
-                        _format_timestamp(start)
-                    ] = price
+                    self._segments.setdefault(epic, {})[_format_timestamp(start)] = (
+                        price
+                    )
             self._seeded_until[key] = current_start
 
     async def _state_for(self, epic: str, resolution: str) -> _SubscriptionState:

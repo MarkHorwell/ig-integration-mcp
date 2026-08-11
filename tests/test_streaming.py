@@ -120,8 +120,9 @@ async def test_current_candle_rejects_unsupported_resolution() -> None:
         raise AssertionError("expected an unsupported resolution error")
 
 
-def test_aggregate_five_minute_candles_builds_a_consolidated_fifteen_minute_bar(
-) -> None:
+def test_aggregate_five_minute_candles_builds_a_consolidated_fifteen_minute_bar() -> (
+    None
+):
     start = datetime(2026, 1, 1, tzinfo=UTC)
     candles = {
         "2026-01-01T00:00:00Z": _candle(

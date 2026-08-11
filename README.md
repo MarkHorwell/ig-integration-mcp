@@ -4,6 +4,10 @@ A local Python MCP server for IG's REST Trading API. It provides account/history
 
 Trading leveraged products can result in losses exceeding deposits. Start with an IG demo account.
 
+## Version 0.8.2
+
+- Applies Ruff formatting required by CI.
+
 ## Version 0.8.1
 
 - Adds `MINUTE_15` support to `ig_get_current_candle` by aggregating IG's five-minute streaming candles, with REST seeding for completed segments in the active interval.
