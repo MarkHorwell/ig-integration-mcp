@@ -4,6 +4,11 @@ A local Python MCP server for IG's REST Trading API. It provides account/history
 
 Trading leveraged products can result in losses exceeding deposits. Start with an IG demo account.
 
+## Version 0.8.3
+
+- Adds `HOUR_4` and `DAY` support to `ig_get_current_candle`, aggregating hourly stream candles in IG-aligned market-session windows.
+- Aligns REST-seeded stream segments with IG's market-local history timestamps and adds derived-candle debug diagnostics.
+
 ## Version 0.8.2
 
 - Applies Ruff formatting required by CI.
@@ -102,10 +107,12 @@ ig_get_historical_prices(
 `ig_get_current_candle` subscribes to IG's Lightstreamer chart feed the first time
 an epic and resolution are requested. The server keeps the latest forming candle
 in memory and later calls return the newest received snapshot without a REST
-price request. It supports `SECOND`, `MINUTE`, `MINUTE_5`, `MINUTE_15`, and
-`HOUR`. `MINUTE_15` combines IG's five-minute stream candles. Its first request
-may make a REST history request to seed already-completed five-minute segments
-in the active 15-minute window.
+price request. It supports `SECOND`, `MINUTE`, `MINUTE_5`, `MINUTE_15`, `HOUR`,
+`HOUR_4`, and `DAY`. `MINUTE_15` combines IG's five-minute stream candles.
+`HOUR_4` and `DAY` combine hourly stream candles, using IG's current `HOUR_4`
+or `DAY` candle to align the active time window to the instrument's market
+session. Their first requests may make REST history requests to seed completed
+segments in the active interval.
 
 ```text
 ig_get_current_candle(
@@ -118,8 +125,10 @@ ig_get_current_candle(
 The response includes IG's bid and ask OHLC values, update time, tick count, and
 `consolidated`, which becomes true when IG closes the candle. Call the tool again
 to get later updates: MCP tool responses cannot be pushed to an agent after a
-tool call returns. Idle subscriptions are removed when a later streaming request
-arrives; streaming data is never persisted.
+tool call returns. Set `IG_LOG_LEVEL=DEBUG` to log the derived window chosen from
+IG, REST segment-seeding ranges and counts, and the assembled candle's segment
+count. Idle subscriptions are removed when a later streaming request arrives;
+streaming data is never persisted.
 
 ## File Logging
 

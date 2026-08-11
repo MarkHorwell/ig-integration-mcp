@@ -256,9 +256,10 @@ async def ig_get_current_candle(
 ) -> dict[str, Any]:
     """Get the latest forming IG chart candle via a shared streaming subscription.
 
-    Supported resolutions are SECOND, MINUTE, MINUTE_5, MINUTE_15, and HOUR.
-    MINUTE_15 is derived from IG's five-minute stream. Call again for a newer
-    snapshot; MCP tool responses cannot be pushed after they return.
+    Supported resolutions are SECOND, MINUTE, MINUTE_5, MINUTE_15, HOUR,
+    HOUR_4, and DAY. Derived resolutions are built from IG streaming candles.
+    Call again for a newer snapshot; MCP tool responses cannot be pushed after
+    they return.
     """
     timezone_for(timezone)
     return response(
