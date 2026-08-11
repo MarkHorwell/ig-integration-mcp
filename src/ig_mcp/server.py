@@ -89,7 +89,11 @@ def get_client() -> IGClient:
 def get_streaming() -> StreamingCandleManager:
     global _streaming
     if _streaming is None:
-        _streaming = StreamingCandleManager(get_client().get_streaming_credentials)
+        client = get_client()
+        _streaming = StreamingCandleManager(
+            client.get_streaming_credentials,
+            historical_prices=client.get_historical_prices,
+        )
     return _streaming
 
 
@@ -252,8 +256,9 @@ async def ig_get_current_candle(
 ) -> dict[str, Any]:
     """Get the latest forming IG chart candle via a shared streaming subscription.
 
-    Supported resolutions are SECOND, MINUTE, MINUTE_5, and HOUR. Call again for
-    a newer snapshot; MCP tool responses cannot be pushed after they return.
+    Supported resolutions are SECOND, MINUTE, MINUTE_5, MINUTE_15, and HOUR.
+    MINUTE_15 is derived from IG's five-minute stream. Call again for a newer
+    snapshot; MCP tool responses cannot be pushed after they return.
     """
     timezone_for(timezone)
     return response(

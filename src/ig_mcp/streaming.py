@@ -4,9 +4,9 @@ import asyncio
 import logging
 import threading
 import time
-from collections.abc import Callable
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from typing import Any
 
 from lightstreamer.client import LightstreamerClient, Subscription, SubscriptionListener
@@ -21,6 +21,7 @@ _SCALES = {
     "MINUTE_5": ("5MINUTE", 300),
     "HOUR": ("HOUR", 3600),
 }
+_DERIVED_RESOLUTIONS = {"MINUTE_15"}
 _FIELDS = [
     "UTM",
     "BID_OPEN",
@@ -56,18 +57,25 @@ class StreamingCandleManager:
         client_factory: Callable[[str], Any] = lambda endpoint: LightstreamerClient(
             endpoint, None
         ),
+        historical_prices: Callable[[str, str, str, str], Awaitable[dict[str, Any]]]
+        | None = None,
         idle_seconds: float = 300,
     ) -> None:
         self._credentials = credentials
         self._client_factory = client_factory
+        self._historical_prices = historical_prices
         self._idle_seconds = idle_seconds
         self._client: Any | None = None
         self._states: dict[tuple[str, str], _SubscriptionState] = {}
+        self._segments: dict[str, dict[str, dict[str, Any]]] = {}
+        self._seeded_until: dict[tuple[str, str], datetime] = {}
         self._lock = threading.RLock()
 
     async def current_candle(self, epic: str, resolution: str) -> dict[str, Any]:
+        if resolution == "MINUTE_15":
+            return await self._current_fifteen_minute_candle(epic)
         if resolution not in _SCALES:
-            supported = ", ".join(_SCALES)
+            supported = ", ".join((*_SCALES, *_DERIVED_RESOLUTIONS))
             raise ValueError(f"resolution must be one of: {supported}")
         state = await self._state_for(epic, resolution)
         if not state.ready.is_set():
@@ -83,6 +91,50 @@ class StreamingCandleManager:
                     "IG streaming candle snapshot contained no price data"
                 )
             return dict(state.candle)
+
+    async def _current_fifteen_minute_candle(self, epic: str) -> dict[str, Any]:
+        current = await self.current_candle(epic, "MINUTE_5")
+        current_start = _timestamp(current["snapshotTimeUTC"])
+        window_start = datetime.fromtimestamp(
+            int(current_start.timestamp() // 900) * 900, UTC
+        )
+        await self._seed_five_minute_segments(epic, window_start, current_start)
+        with self._lock:
+            segments = dict(self._segments.get(epic, {}))
+        return _aggregate_five_minute_candles(window_start, segments)
+
+    async def _seed_five_minute_segments(
+        self, epic: str, window_start: datetime, current_start: datetime
+    ) -> None:
+        if self._historical_prices is None or current_start <= window_start:
+            return
+        key = (epic, _format_timestamp(window_start))
+        with self._lock:
+            seeded_until = self._seeded_until.get(key, window_start)
+        if seeded_until >= current_start:
+            return
+        response = await self._historical_prices(
+            epic,
+            "MINUTE_5",
+            _format_timestamp(seeded_until),
+            _format_timestamp(current_start),
+        )
+        prices = response.get("prices")
+        if not isinstance(prices, list):
+            raise RuntimeError("Unexpected historical price response from IG API")
+        with self._lock:
+            for price in prices:
+                if not isinstance(price, dict):
+                    continue
+                timestamp = price.get("snapshotTimeUTC")
+                if not isinstance(timestamp, str):
+                    continue
+                start = _timestamp(timestamp)
+                if window_start <= start < current_start:
+                    self._segments.setdefault(epic, {})[
+                        _format_timestamp(start)
+                    ] = price
+            self._seeded_until[key] = current_start
 
     async def _state_for(self, epic: str, resolution: str) -> _SubscriptionState:
         key = (epic, resolution)
@@ -118,7 +170,12 @@ class StreamingCandleManager:
             scale, seconds = _SCALES[key[1]]
             subscription = Subscription("MERGE", [f"CHART:{key[0]}:{scale}"], _FIELDS)
             state = _SubscriptionState(subscription)
-            state.listener = _CandleListener(state, seconds, self._lock)
+            state.listener = _CandleListener(
+                state,
+                seconds,
+                self._lock,
+                lambda candle: self._record_segment(key[0], candle),
+            )
             subscription.addListener(state.listener)
             self._client.subscribe(subscription)
             self._states[key] = state
@@ -126,6 +183,14 @@ class StreamingCandleManager:
                 "Subscribed to IG streaming candle: epic=%s scale=%s", key[0], scale
             )
             return state
+
+    def _record_segment(self, epic: str, candle: dict[str, Any]) -> None:
+        segments = self._segments.setdefault(epic, {})
+        segments[candle["snapshotTimeUTC"]] = candle
+        cutoff = datetime.now(UTC).timestamp() - 3600
+        for timestamp in list(segments):
+            if _timestamp(timestamp).timestamp() < cutoff:
+                del segments[timestamp]
 
     def _remove_idle_subscriptions(self) -> None:
         cutoff = time.monotonic() - self._idle_seconds
@@ -145,14 +210,22 @@ class StreamingCandleManager:
                 self._client.disconnect()
             self._client = None
             self._states.clear()
+            self._segments.clear()
+            self._seeded_until.clear()
 
 
 class _CandleListener(SubscriptionListener):
     def __init__(
-        self, state: _SubscriptionState, seconds: int, lock: threading.RLock) -> None:
+        self,
+        state: _SubscriptionState,
+        seconds: int,
+        lock: threading.RLock,
+        on_candle: Callable[[dict[str, Any]], None],
+    ) -> None:
         self._state = state
         self._seconds = seconds
         self._lock = lock
+        self._on_candle = on_candle
 
     def onItemUpdate(self, update: Any) -> None:
         values = {field: update.getValue(field) for field in _FIELDS}
@@ -160,6 +233,7 @@ class _CandleListener(SubscriptionListener):
         with self._lock:
             if candle is not None:
                 self._state.candle = candle
+                self._on_candle(candle)
             self._state.ready.set()
 
 
@@ -209,3 +283,79 @@ def _number(value: Any) -> float | None:
         return float(value)
     except (TypeError, ValueError):
         return None
+
+
+def _timestamp(value: str) -> datetime:
+    return datetime.fromisoformat(value.replace("Z", "+00:00")).astimezone(UTC)
+
+
+def _format_timestamp(value: datetime) -> str:
+    return value.astimezone(UTC).isoformat().replace("+00:00", "Z")
+
+
+def _aggregate_five_minute_candles(
+    start: datetime, segments: dict[str, dict[str, Any]]
+) -> dict[str, Any]:
+    end = start + timedelta(minutes=15)
+    candles = sorted(
+        (
+            candle
+            for timestamp, candle in segments.items()
+            if start <= _timestamp(timestamp) < end
+        ),
+        key=lambda candle: candle["snapshotTimeUTC"],
+    )
+    if not candles:
+        raise RuntimeError("No five-minute candle data is available for this interval")
+    result: dict[str, Any] = {
+        "snapshotTimeUTC": _format_timestamp(start),
+        "openPrice": dict(candles[0]["openPrice"]),
+        "highPrice": _extreme_price(candles, "highPrice", max),
+        "lowPrice": _extreme_price(candles, "lowPrice", min),
+        "closePrice": dict(candles[-1]["closePrice"]),
+        "consolidated": (
+            len(candles) == 3
+            and candles[-1]["snapshotTimeUTC"]
+            == _format_timestamp(start + timedelta(minutes=10))
+            and candles[-1].get("consolidated") is True
+        ),
+    }
+    update_times = [
+        value
+        for candle in candles
+        if isinstance(value := candle.get("updateTimeUTC"), str)
+    ]
+    if update_times:
+        result["updateTimeUTC"] = max(update_times)
+    for source, target in (
+        ("lastTradedVolume", "lastTradedVolume"),
+        ("tickCount", "tickCount"),
+    ):
+        values = [
+            value
+            for candle in candles
+            if isinstance(value := candle.get(source), (int, float))
+        ]
+        if values:
+            result[target] = sum(values)
+    return result
+
+
+def _extreme_price(
+    candles: list[dict[str, Any]], field: str, operation: Callable[[list[float]], float]
+) -> dict[str, float | None]:
+    return {
+        side: operation(values)
+        if (values := _price_values(candles, field, side))
+        else None
+        for side in ("bid", "ask")
+    }
+
+
+def _price_values(candles: list[dict[str, Any]], field: str, side: str) -> list[float]:
+    return [
+        value
+        for candle in candles
+        if isinstance(price := candle.get(field), dict)
+        and isinstance(value := price.get(side), (int, float))
+    ]

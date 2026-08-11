@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+from datetime import UTC, datetime
+
 from ig_mcp.client import StreamingCredentials
-from ig_mcp.streaming import StreamingCandleManager
+from ig_mcp.streaming import StreamingCandleManager, _aggregate_five_minute_candles
 
 
 class FakeConnectionDetails:
@@ -116,3 +118,89 @@ async def test_current_candle_rejects_unsupported_resolution() -> None:
         assert "MINUTE_5" in str(error)
     else:
         raise AssertionError("expected an unsupported resolution error")
+
+
+def test_aggregate_five_minute_candles_builds_a_consolidated_fifteen_minute_bar(
+) -> None:
+    start = datetime(2026, 1, 1, tzinfo=UTC)
+    candles = {
+        "2026-01-01T00:00:00Z": _candle(
+            "2026-01-01T00:00:00Z", 1.0, 1.4, 0.9, 1.2, 2, 3
+        ),
+        "2026-01-01T00:05:00Z": _candle(
+            "2026-01-01T00:05:00Z", 1.2, 1.5, 1.1, 1.3, 4, 5
+        ),
+        "2026-01-01T00:10:00Z": _candle(
+            "2026-01-01T00:10:00Z", 1.3, 1.6, 1.0, 1.4, 6, 7, True
+        ),
+    }
+
+    candle = _aggregate_five_minute_candles(start, candles)
+
+    assert candle == {
+        "snapshotTimeUTC": "2026-01-01T00:00:00Z",
+        "openPrice": {"bid": 1.0, "ask": 1.0002},
+        "highPrice": {"bid": 1.6, "ask": 1.6002},
+        "lowPrice": {"bid": 0.9, "ask": 0.9002},
+        "closePrice": {"bid": 1.4, "ask": 1.4002},
+        "updateTimeUTC": "2026-01-01T00:14:59Z",
+        "lastTradedVolume": 12,
+        "tickCount": 15,
+        "consolidated": True,
+    }
+
+
+async def test_fifteen_minute_bootstrap_fetches_missing_segments_once() -> None:
+    calls: list[tuple[str, str, str, str]] = []
+
+    async def credentials() -> StreamingCredentials:
+        raise AssertionError("stream credentials are not needed for bootstrap")
+
+    async def history(
+        epic: str, resolution: str, from_date: str, to_date: str
+    ) -> dict[str, object]:
+        calls.append((epic, resolution, from_date, to_date))
+        return {
+            "prices": [
+                _candle("2026-01-01T00:00:00Z", 1.0, 1.1, 0.9, 1.05, 2, 3),
+                _candle("2026-01-01T00:05:00Z", 1.05, 1.2, 1.0, 1.1, 4, 5),
+            ]
+        }
+
+    manager = StreamingCandleManager(credentials, historical_prices=history)
+    start = datetime(2026, 1, 1, tzinfo=UTC)
+    current_start = datetime(2026, 1, 1, 0, 10, tzinfo=UTC)
+
+    await manager._seed_five_minute_segments("EPIC", start, current_start)
+    await manager._seed_five_minute_segments("EPIC", start, current_start)
+
+    assert calls == [
+        ("EPIC", "MINUTE_5", "2026-01-01T00:00:00Z", "2026-01-01T00:10:00Z")
+    ]
+    assert sorted(manager._segments["EPIC"]) == [
+        "2026-01-01T00:00:00Z",
+        "2026-01-01T00:05:00Z",
+    ]
+
+
+def _candle(
+    timestamp: str,
+    open_price: float,
+    high: float,
+    low: float,
+    close: float,
+    volume: int,
+    ticks: int,
+    consolidated: bool = False,
+) -> dict[str, object]:
+    return {
+        "snapshotTimeUTC": timestamp,
+        "updateTimeUTC": "2026-01-01T00:14:59Z",
+        "openPrice": {"bid": open_price, "ask": open_price + 0.0002},
+        "highPrice": {"bid": high, "ask": high + 0.0002},
+        "lowPrice": {"bid": low, "ask": low + 0.0002},
+        "closePrice": {"bid": close, "ask": close + 0.0002},
+        "lastTradedVolume": volume,
+        "tickCount": ticks,
+        "consolidated": consolidated,
+    }
