@@ -487,10 +487,12 @@ class IGClient:
             await self._login()
 
     async def _login(self) -> None:
-        response = await self._http.post(
+        response = await self._send(
+            "POST",
             "/session",
-            headers=self._base_headers(version=3),
-            json={
+            version=3,
+            params=None,
+            body={
                 "identifier": self.settings.identifier,
                 "password": self.settings.password,
             },
@@ -505,10 +507,12 @@ class IGClient:
             )
 
     async def _refresh_session(self) -> None:
-        response = await self._http.post(
+        response = await self._send(
+            "POST",
             "/session/refresh-token",
-            headers=self._base_headers(version=1),
-            json={"refresh_token": self._refresh_token},
+            version=1,
+            params=None,
+            body={"refresh_token": self._refresh_token},
         )
         self._store_tokens(self._decode(response))
         logger.info("Refreshed IG session")
@@ -535,6 +539,14 @@ class IGClient:
         headers = self._base_headers(version=version)
         headers["Authorization"] = f"Bearer {self._access_token}"
         headers["IG-ACCOUNT-ID"] = self._account_id or ""
+        logger.debug(
+            "IG API request: method=%s path=%s version=%s params=%s body=%s",
+            method,
+            path,
+            version,
+            IGApiError._redact(params),
+            IGApiError._redact(body),
+        )
         try:
             response = await self._http.request(
                 method, path, headers=headers, params=params, json=body
@@ -559,11 +571,24 @@ class IGClient:
 
     @staticmethod
     def _decode(response: httpx.Response) -> dict[str, Any]:
+        payload: dict[str, Any] = {}
+        if response.content:
+            decoded = response.json()
+            if not isinstance(decoded, dict):
+                raise RuntimeError("Unexpected non-object response from IG API")
+            payload = decoded
+        logger.debug(
+            "IG API response data: method=%s version=%s status=%s data=%s",
+            response.request.method,
+            response.request.headers.get("Version"),
+            response.status_code,
+            IGApiError._redact(payload),
+        )
         if response.is_error:
             error = IGApiError(response)
             logger.warning("IG API returned an error: %s", error)
             raise error
-        if not response.content:
+        if not payload:
             logger.info(
                 "IG API response: method=%s version=%s status=%s allowance=%s",
                 response.request.method,
@@ -572,9 +597,6 @@ class IGClient:
                 None,
             )
             return {}
-        payload = response.json()
-        if not isinstance(payload, dict):
-            raise RuntimeError("Unexpected non-object response from IG API")
         logger.info(
             "IG API response: method=%s version=%s status=%s allowance=%s",
             response.request.method,

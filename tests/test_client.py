@@ -97,6 +97,37 @@ async def test_client_logs_in_then_makes_authenticated_request(
 
 
 @respx.mock
+async def test_client_logs_redacted_request_parameters_and_response_data_at_debug(
+    settings: Settings, caplog: pytest.LogCaptureFixture
+) -> None:
+    caplog.set_level(logging.DEBUG, logger="ig_mcp.client")
+    respx.post(f"{DEMO_BASE_URL}/session").mock(return_value=login_response())
+    respx.get(f"{DEMO_BASE_URL}/accounts").mock(
+        return_value=httpx.Response(
+            200,
+            json={"accounts": [{"id": "ABC"}], "access_token": "response-token"},
+        )
+    )
+    async with httpx.AsyncClient(base_url=DEMO_BASE_URL) as http:
+        client = IGClient(settings, http)
+        await client.request(
+            "GET",
+            "/accounts",
+            version=1,
+            params={"pageSize": 20, "access_token": "request-token"},
+        )
+
+    assert (
+        "IG API request: method=GET path=/accounts version=1 "
+        "params={'pageSize': 20, 'access_token': '[REDACTED]'} body=None"
+    ) in caplog.messages
+    assert (
+        "IG API response data: method=GET version=1 status=200 "
+        "data={'accounts': [{'id': 'ABC'}], 'access_token': '[REDACTED]'}"
+    ) in caplog.messages
+
+
+@respx.mock
 async def test_client_raises_structured_ig_error(settings: Settings) -> None:
     respx.post(f"{DEMO_BASE_URL}/session").mock(
         return_value=httpx.Response(

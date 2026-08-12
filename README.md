@@ -4,6 +4,11 @@ A local Python MCP server for IG's REST Trading API. It provides account/history
 
 Trading leveraged products can result in losses exceeding deposits. Start with an IG demo account.
 
+## Version 0.8.5
+
+- At `DEBUG`, logs every IG REST request's path, version, parameters, and body, and each response's complete payload.
+- Redacts passwords and OAuth tokens from debug logs.
+
 ## Version 0.8.4
 
 - Makes `snapshotTime` and `snapshotTimeUTC` represent the same instant in the requested timezone, using IG's authoritative UTC candle timestamp.
@@ -147,7 +152,7 @@ streaming data is never persisted.
 
 ## File Logging
 
-Operational logging is enabled by default and writes only to `~/.cache/ig-mcp/ig-mcp.log`, keeping MCP stdout reserved for the protocol. Set `IG_LOG_PATH` to use another location, `IG_LOG_LEVEL` to select `DEBUG`, `INFO`, `WARNING`, `ERROR`, or `CRITICAL`, or `IG_LOG_ENABLED=false` to disable it. Each successful API response log includes its `allowance` object. At `DEBUG`, historical-price logs include returned candle counts and serialized byte totals from the SQLite cache and IG API separately.
+Operational logging is enabled by default and writes only to `~/.cache/ig-mcp/ig-mcp.log`, keeping MCP stdout reserved for the protocol. Set `IG_LOG_PATH` to use another location, `IG_LOG_LEVEL` to select `DEBUG`, `INFO`, `WARNING`, `ERROR`, or `CRITICAL`, or `IG_LOG_ENABLED=false` to disable it. Each successful API response log includes its `allowance` object. At `DEBUG`, every IG REST request logs its method, path, API version, parameters, and body; every response logs its complete payload. Passwords and OAuth tokens are redacted. Historical-price logs also include returned candle counts and serialized byte totals from the SQLite cache and IG API separately.
 
 Logs rotate at midnight UTC. The active log and one prior daily archive are retained; older archives are removed automatically.
 
